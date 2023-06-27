@@ -1,0 +1,15 @@
+# Main application Kconfig file
+
+menu "Application configuration"
+
+	config AUDIO_SAMPLE_ENABLE
+		bool "Enable Audio Sample functionality"
+		help
+			Set this option to enable dumping audio samples during echo cancellation
+	
+	config SCREENDUMP_ENABLE
+		bool "Enable screendump functionality"
+		help
+			Set this option to enable dumping the raw screen info when secret GUI items pressed
+			
+endmenu
