@@ -8,7 +8,7 @@ This project contains a significant amount of audio processing necessary to do t
 
 Although not inclusive of the history of [spandsp (Steve's website)](https://www.soft-switch.org/), you can read about David Rowe's experience building OSLEC on his website starting with [this](http://www.rowetel.com/?p=18) post.
 
-What is fun is this code that used to have to run on [then] high-end computer processors or dedicated DSP chips can now run, unmodified, on inexpensive embedded processors like the ESP32 (an email conversation with David encouraged me to pursue using his code as he felt the ESP32 should be fully capable of running his algorithm).
+What is fun is that code that used to have to run on [then] high-end computer processor or dedicated DSP chips can now run, unmodified, on inexpensive embedded processors like the ESP32.  In fact, an email conversation with David encouraged me to pursue using his code as he felt the ESP32 should be fully capable of running his algorithm.
 
 ## Building the project
 The project was developed using Espressif IDF v4.4.4 and creates firmware to run on [gCore](https://github.com/danjulio/gCore).  The project is contained in the ```gcore_pots_bt``` directory.  These instructions assume that the IDF is installed and configured in a shell window (instructions at Espressif's [Getting Started](https://docs.espressif.com/projects/esp-idf/en/v4.4.4/esp32/get-started/index.html) web page).
@@ -73,7 +73,7 @@ You can download the Espressif Programming Tool [here](https://www.espressif.com
 
 ## Operation
 
-gCore should display the following screen after loading the firmware.
+weeBell should display the following screen after loading the firmware.
 
 ![weeBell Bluetooth main screen](pictures/weeBell_initial_screen.png)
 
@@ -157,4 +157,7 @@ In the case were weeBell firmware crashes then it is possible to turn the device
 
 #### Error messages
 weeBell may display a pop-up dialog box if certain internal errors are detected.  In this case normal operation is suspended and the dialog box prompts to turn weeBell off so the error may be attended to.  The mostly likely cause of this error is if the gCore POTS shield is not [correctly] connected to gCore and the firmware cannot initialize the codec chip via I2C.
+
+#### Persistent Storage
+Pairing information is held in gCore's NVRAM.  This memory persists as long as power is applied (from USB or the battery).  Disconnecting the battery will erase the memory and weeBell will have to be paired again.  When repairing, always delete the existing pairing on the cellphone first.
 
