@@ -3,6 +3,13 @@ This repository contains an ESP32 IDF project to build firmware running on [weeB
 
 ![weeBell with telephones](pictures/weeBell_with_phones.png)
 
+## [first] A Shout Out
+This project contains a significant amount of audio processing necessary to do things like generate and decode DTMF tones and dial tones, convert between different samples rates, and, very importantly, implement Line Echo Cancellation (LEC) which is has long been a necessary function of telephone systems that end in a hybrid circuit driving the two-wire POTS telephone electrical connection.  The LEC removes the audio echoed back by the hybrid so the person at the remote end doesn't hear themselves echoed back a few hundred milliseconds after they speak (the time it takes the cellular network to move the audio between two points).  This project was made possible by the discovery of David Rowe's OSLEC echo cancellation code integrated into Steve Underwood's [spandsp (github)](https://github.com/svn2github/oslec) telephony library.  IMHO this library is a thing of beauty (clearly coming from tremendous skill and experience) and made it possible for me to create this project.  A huge thank you to David and Steve, and thanks for putting this up on github so it wasn't consigned to the dustbin of history.
+
+Although not inclusive of the history of [spandsp (Steve's website)](https://www.soft-switch.org/), you can read about David Rowe's experience building OSLEC on his website starting with [this](http://www.rowetel.com/?p=18) post.
+
+What is fun is this code that used to have to run on [then] high-end computer processors or dedicated DSP chips can now run, unmodified, on inexpensive embedded processors like the ESP32 (an email conversation with David encouraged me to pursue using his code as he felt the ESP32 should be fully capable of running his algorithm).
+
 ## Building the project
 The project was developed using Espressif IDF v4.4.4 and creates firmware to run on [gCore](https://github.com/danjulio/gCore).  The project is contained in the ```gcore_pots_bt``` directory.  These instructions assume that the IDF is installed and configured in a shell window (instructions at Espressif's [Getting Started](https://docs.espressif.com/projects/esp-idf/en/v4.4.4/esp32/get-started/index.html) web page).
 
