@@ -40,7 +40,7 @@
 #define APP_LAST_RING_DETECT_MSEC            7000
 
 // Period to wait after digit dialed on phone (but not GUI) before initiating a call
-#define APP_LAST_DIGIT_2_DIAL_MSEC           3000
+#define APP_LAST_DIGIT_2_DIAL_MSEC           4000
 
 // Maximum number of dialed digits
 //   Includes phone number and any subsequent keypresses (e.g. entering info)

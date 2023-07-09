@@ -108,7 +108,7 @@ static pots_ring_stateT pots_ring_state;
 static int pots_num_ring_steps;          // Number of steps in a ring (at least 2 for a single ON/OFF)
 static int pots_ring_step;               // The current cadence step
 static int pots_ring_period_count;       // Counts down evaluation cycles for each ringing state
-static int pots_ring_pulse_count;        // Counts down pulses in one ring ON portion
+static int pots_ring_pulse_count;        // Counts down pulses in one ring ON or OFF portion
 
 
 // Dialing logic
@@ -172,7 +172,7 @@ static void _potsEvalPhoneState(bool hookChange);
 static void _potsEvalRinger();
 static void _potsStartRing();
 static void _potsEndRing();
-static int _potsGetRingPulseCount();
+static int _potsGetRingPulseCount(bool on_portion);
 static bool _potsEvalDialer(bool hookChange);
 static void _potsSetToneState(pots_tone_stateT ns);
 static void _potsEvalToneState(bool potsDigitDialed, bool appDigitDialed);
@@ -568,7 +568,7 @@ static void _potsEvalRinger()
 			if (--pots_ring_pulse_count <= 0) {
 				// Ring pulse done
 				pots_ring_state = RING_PULSE_OFF;
-				pots_ring_pulse_count = _potsGetRingPulseCount();  // Off for half a pulse
+				pots_ring_pulse_count = _potsGetRingPulseCount(false);  // Off for half a pulse
 				gpio_set_level(PIN_FR, 1);
 			}
 			break;
@@ -582,7 +582,7 @@ static void _potsEvalRinger()
 				if (pots_ring_period_count <= 0) {
 					// End of ring - check if there are more rings
 					if (++pots_ring_step == (pots_num_ring_steps-1)) {
-						pots_ring_state = RING_IDLE;
+						_potsEndRing();
 					} else {
 						pots_ring_state = RING_STEP_WAIT;
 						pots_ring_period_count = country_code_infoP->ring_info.cadence_pairs[pots_ring_step] / POTS_EVAL_MSEC;
@@ -590,7 +590,7 @@ static void _potsEvalRinger()
 				} else {
 					// Setup next ring pulse in this ring
 					pots_ring_state = RING_PULSE_ON;
-					pots_ring_pulse_count = _potsGetRingPulseCount();
+					pots_ring_pulse_count = _potsGetRingPulseCount(true);
 					gpio_set_level(PIN_FR, 0);
 				}
 			}
@@ -602,7 +602,7 @@ static void _potsEvalRinger()
 				++pots_ring_step;
 				pots_ring_state = RING_PULSE_ON;
 				pots_ring_period_count = country_code_infoP->ring_info.cadence_pairs[pots_ring_step] / POTS_EVAL_MSEC;
-				pots_ring_pulse_count = _potsGetRingPulseCount();
+				pots_ring_pulse_count = _potsGetRingPulseCount(true);
 			}
 			break;
 	}
@@ -623,7 +623,7 @@ static void _potsStartRing()
 	pots_ring_step = 0;
 	pots_ring_state = RING_PULSE_ON;
 	pots_ring_period_count = country_code_infoP->ring_info.cadence_pairs[pots_ring_step] / POTS_EVAL_MSEC;
-	pots_ring_pulse_count = _potsGetRingPulseCount();
+	pots_ring_pulse_count = _potsGetRingPulseCount(true);
 	gpio_set_level(PIN_RM, 1);   // Cause the line to enter ring mode
 	gpio_set_level(PIN_FR, 0);   // Toggle the line (reverse) to start this pulse of the ring
 }
@@ -637,10 +637,25 @@ static void _potsEndRing()
 }
 
 
-static int _potsGetRingPulseCount()
+static int _potsGetRingPulseCount(bool on_portion)
 {
-	// Pulse count specifies evaluation cycles for one half of a ring pulse (either ON or OFF)
-	return (((country_code_infoP->ring_info.cadence_pairs[pots_ring_step] / country_code_infoP->ring_info.freq) / 2) / POTS_EVAL_MSEC);
+	int ring_pulse_period_msec;
+	int ring_on_eval_counts;
+	
+	// Get the period for one pulse (both ON then OFF)
+	ring_pulse_period_msec = 1000 / country_code_infoP->ring_info.freq;
+	
+	// Determine how many evaluation cycles for the ON portion - it is nominally 1/2 of the full period divided by our evaluation interval
+	// but this may end up slightly off because 1/2 of the full period may not be evenly divisible by the evaluation interval
+	ring_on_eval_counts = ring_pulse_period_msec / 2 / POTS_EVAL_MSEC;
+	
+	if (on_portion) {
+		return ring_on_eval_counts;
+	} else {
+		// We handle the case where the ON cycles weren't exactly right by compensating in the OFF portion
+		ring_pulse_period_msec = ring_pulse_period_msec - (ring_on_eval_counts * POTS_EVAL_MSEC);
+		return (ring_pulse_period_msec / POTS_EVAL_MSEC);
+	}
 }
 
 

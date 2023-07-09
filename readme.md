@@ -138,7 +138,7 @@ All tones are country-specific and controlled by the Locale control.
 #### Dialing
 weeBell can initiate a phone call through the cellphone in the following ways when the POTs handset is taken off-hook.
 
-1. Telephone number dialed on the POTs rotary dial or DTMF keypad.  weeBell will initiate a phone call 3 seconds after the last digit is dialed so it is important to dial all the digits at once.
+1. Telephone number dialed on the POTs rotary dial or DTMF keypad.  weeBell will initiate a phone call 4 seconds after the last digit is dialed so it is important to dial all the digits at once.
 2. Telephone number dialed on weeBell keypad followed by Dial button.  The weeBell keypad may also be used to send DTMF tones during a phone call (for example when responding to an auto-attendant while using a rotary telephone).
 3. Voice command using cellphone "Hey Siri" or "Hey Google" features.  Dialing 0 on the telephone (or keypad followed by Dial) initiates a voice command.  The functionality must be enabled on the cellphone.  You can issue the voice command after hearing the cellphone-specific prompt in the earpiece.
 
@@ -161,3 +161,17 @@ weeBell may display a pop-up dialog box if certain internal errors are detected.
 #### Persistent Storage
 Pairing information is held in gCore's NVRAM.  This memory persists as long as power is applied (from USB or the battery).  Disconnecting the battery will erase the memory and weeBell will have to be paired again.  When repairing, always delete the existing pairing on the cellphone first.
 
+## Release Notes
+
+### Release 0.1 - June 26, 2023
+Initial Release
+
+### Release 0.2 - July 9, 2023
+Bug Fixes
+
+1. Correct Ring Frequency off by two calculation (ring was half of desired frequency)
+2. Correctly drive RM low at end of ring - some rotary phones would have a off by one error in dialing after ringing.
+
+Functionality
+
+1. Increased time to initiate call after dialing from 3 seconds to 4 seconds.
