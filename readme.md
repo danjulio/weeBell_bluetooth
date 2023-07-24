@@ -52,7 +52,7 @@ Direct downloads for platform-specific gCore Serial Programmer versions may be f
 2. [Mac OS download](https://danjuliodesigns.com/resources/AppSupport/gcore/gsc_0_2_0_macOS.zip) - 64-bit universal (sadly unsigned so you'll have to authorize it manually in System Preferences->Security&Privacy)
 3. [Windows download](https://danjuliodesigns.com/resources/AppSupport/gcore/gsc_0_2_0_Windows64.zip) - 64-bit x86 architecture version
 
-It downloads the current binaries from my website and is a great way to load the latest version of this program (and other gCore demos).
+The software downloads the current binaries from my website and is a great way to load the latest version of this program (and other gCore demos).
 
 Connect gCore to your computer and switch on.  Open the gCore Serial Programmer and select the associated serial port form the pull-down menu.  Then select ```weeBell Bluetooth``` from the Software List and press Program.  Programming will take about 30 seconds and then gCore should reboot running the weeBell firmware.
 
@@ -127,7 +127,7 @@ weeBell Bluetooth uses the classic Bluetooth Handsfree profile to communicate wi
 weeBell attempts to connect with a paired cellphone once every sixty seconds.
 
 #### Tones
-weeBell generates the following dial tones when the handset if off-hook.
+weeBell generates the following dial tones when the handset is off-hook.
 
 1. Dial tone - weeBell is connected a cellphone and capable of making a call.
 2. Reorder tone - weeBell is not connected to a cellphone and not capable of making a call.
