@@ -24,6 +24,7 @@
 // Included samples files
 //
 #include "aus_dialtone.h"
+#include "india_dialtone.h"
 #include "uk_offhook.h"
 
 
@@ -32,12 +33,17 @@
 //
 
 // NUM_COUNTRIES must match data structure below
-#define NUM_COUNTRIES 4
+#define NUM_COUNTRIES 7
 
-// Country list - alphabetize
+// Country list - alphabetize by name for the GUI
 static const country_info_t country_info[] = {
 	{"Australia",
-	 INT_CID_TYPE_ETSI_FSK,                                     // Caller ID Type
+	 {
+	 	INT_CID_TYPE_BELLCORE_FSK,                              // Caller ID Type
+	 	0,                                                      // Pre timeout
+	 	200,                                                    // Post timeout
+	 	0,                                                      // RP-AS period
+	 },
 	 {                                                          // Sample generated tones:
 	    {AUS_DIALTONE_SAMPLES, snd_aus_dialtone},               //   Dial tone
 	    {0, NULL},                                              //   Reorder tone
@@ -45,31 +51,113 @@ static const country_info_t country_info[] = {
 	 },
 	 {                                                          // DDS generated tones:
 		{{0, 0, 0, 0}, 0, 0, {0, 0, 0, 0}},                     //   Dial tone
-		{{425, 0, 0, 0}, -10, 1, {200, 200, 0, 0}},             //   Reorder tone
-		{{425, 0, 0, 0}, -10, 1, {400, 400, 0, 0}},             //   Off-hook tone (using busy - might be wrong)
+		{{400, 0, 0, 0}, -13, 1, {375, 375, 0, 0}},             //   Reorder tone
+		{{1500, 0, 0, 0}, -10, 1, {0, 0, 0, 0}},                //   Off-hook tone
 	 },
 	 {25, 2, {400, 200, 400, 2000}},                            // Ring
+	 60000,                                                     // Off-hook timeout (mSec)
 	 {1, 2, 3, 4, 5, 6, 7, 8, 9, 0}                             // Rotary map
 	},
 	
-	{"EU - Harmonized",
-	 INT_CID_TYPE_ETSI_FSK,                                     // Caller ID Type
+	{"Europe",
+	 {
+	 	INT_CID_TYPE_ETSI_FSK | 
+	 	INT_CID_FLAG_EN_DT_AS | 
+	 	INT_CID_FLAG_BEFORE_RING,                               // Caller ID Type
+	 	0,                                                      // Pre timeout
+	 	200,                                                    // Post timeout
+	 	0,                                                      // RP-AS period
+	 },
 	 {                                                          // Sample generated tones:
 	    {0, NULL},                                              //   Dial tone
 	    {0, NULL},                                              //   Reorder tone
 	    {0, NULL},                                              //   Off-hook tone
 	 },
 	 {                                                          // DDS generated tones:
-		{{425, 0, 0, 0}, -10, 0, {0, 0, 0, 0}},                 //   Dial tone
-		{{425, 0, 0, 0}, -10, 1, {250, 250, 0, 0}},             //   Reorder tone
-		{{1400, 2060, 2450, 2600}, -10, 1, {100, 100, 0, 0}},   //   Off-hook tone (wrong - dunno what it is)
+		{{425, 0, 0, 0}, -13, 0, {0, 0, 0, 0}},                 //   Dial tone
+		{{425, 0, 0, 0}, -13, 1, {240, 240, 0, 0}},             //   Reorder tone
+		{{425, 0, 0, 0}, -56, 0, {0, 0, 0, 0}},                 //   Off-hook tone (quiet)
 	 },
-	 {25, 1, {1000, 0, 0, 0}},                                  // Ring
+	 {25, 1, {1000, 200, 0, 0}},                                // Ring
+	 0,                                                         // Off-hook timeout (mSec)
 	 {1, 2, 3, 4, 5, 6, 7, 8, 9, 0}                             // Rotary map
 	},
 	
+	{"Germany pre-1979",
+	 {
+	 	INT_CID_TYPE_NONE,                                      // Caller ID Type
+	 	0,                                                      // Pre timeout
+	 	0,                                                      // Post timeout
+	 	0,                                                      // RP-AS period
+	 },
+	 {                                                          // Sample generated tones:
+	    {0, NULL},                                              //   Dial tone
+	    {0, NULL},                                              //   Reorder tone
+	    {0, NULL},                                              //   Off-hook tone
+	 },
+	 {                                                          // DDS generated tones:
+		{{475, 0, 475, 0}, -13, 2, {200, 300, 700, 800}},       //   Dial tone
+		{{475, 0, 0, 0}, -13, 1, {240, 240, 0, 0}},             //   Reorder tone
+		{{475, 0, 0, 0}, -56, 0, {0, 0, 0, 0}},                 //   Off-hook tone (quiet)
+	 },
+	 {25, 1, {1000, 200, 0, 0}},                                // Ring
+	 0,                                                         // Off-hook timeout (mSec)
+	 {1, 2, 3, 4, 5, 6, 7, 8, 9, 0}                             // Rotary map
+	},
+	
+	{"India",
+	 {
+	 	INT_CID_TYPE_DTMF1 | 
+	 	INT_CID_FLAG_EN_LR | 
+	 	INT_CID_FLAG_BEFORE_RING,                               // Caller ID Type
+	 	100,                                                    // Pre timeout
+	 	200,                                                    // Post timeout
+	 	0,                                                      // RP-AS period
+	 },
+	 {                                                          // Sample generated tones:
+	    {INDIA_DIALTONE_SAMPLES, snd_india_dialtone},           //   Dial tone
+	    {0, NULL},                                              //   Reorder tone
+	    {0, NULL},                                              //   Off-hook tone
+	 },
+	 {                                                          // DDS generated tones:
+		{{0, 0, 0, 0}, 0, 0, {0, 0, 0, 0}},                     //   Dial tone
+		{{400, 0, 0, 0}, -13, 1, {250, 250, 0, 0}},             //   Reorder tone
+		{{400, 0, 0, 0}, -56, 1, {0, 0, 0, 0}},                 //   Off-hook tone (quiet)
+	 },
+	 {25, 2, {400, 200, 400, 2000}},                            // Ring
+	 0,                                                         // Off-hook timeout (mSec)
+	 {1, 2, 3, 4, 5, 6, 7, 8, 9, 0}                             // Rotary map
+	},
+	
+	{"New Zealand Rev",
+	 {
+	 	INT_CID_TYPE_BELLCORE_FSK,                              // Caller ID Type
+	 	0,                                                      // Pre timeout
+	 	200,                                                    // Post timeout
+	 	0,                                                      // RP-AS period
+	 },
+	 {                                                          // Sample generated tones:
+	    {0, NULL},                                              //   Dial tone
+	    {0, NULL},                                              //   Reorder tone
+	    {0, NULL},                                              //   Off-hook tone
+	 },
+	 {                                                          // DDS generated tones:
+		{{400, 0, 0, 0}, -13, 0, {0, 0, 0, 0}},                 //   Dial tone
+		{{400, 0, 0, 0}, -13, 1, {250, 250, 0, 0}},             //   Reorder tone
+		{{400, 0, 0, 0}, -56, 1, {0, 0, 0, 0}},                 //   Off-hook tone (quiet)
+	 },
+	 {25, 2, {400, 200, 400, 200}},                             // Ring
+	 0,                                                         // Off-hook timeout (mSec)
+	 {9, 8, 7, 6, 5, 4, 3, 2, 1, 0}                             // Rotary map
+	},
+	
 	{"United States",
-	 INT_CID_TYPE_BELLCORE_FSK,                                 // Caller ID Type
+	 {
+	 	INT_CID_TYPE_BELLCORE_FSK,                              // Caller ID Type
+	 	0,                                                      // Pre timeout
+	 	200,                                                    // Post timeout
+	 	0,                                                      // RP-AS period
+	 },
 	 {                                                          // Sample generated tones:
 	    {0, NULL},                                              //   Dial tone
 	    {0, NULL},                                              //   Reorder tone
@@ -80,12 +168,21 @@ static const country_info_t country_info[] = {
 		{{480, 620, 0, 0}, -13, 1, {250, 250, 0, 0}},           //   Reorder tone
 		{{1400, 2060, 2450, 2600}, -10, 1, {100, 100, 0, 0}},   //   Off-hook tone
 	 },
-	 {20, 1, {2000, 0, 0, 0}},                                  // Ring
+	 {20, 1, {2000, 200, 0, 0}},                                // Ring
+	 60000,                                                     // Off-hook timeout (mSec)
 	 {1, 2, 3, 4, 5, 6, 7, 8, 9, 0}                             // Rotary map
 	},
 	
 	{"United Kingdom",
-	 INT_CID_TYPE_SIN227,                                       // Caller ID Type
+	 {
+		INT_CID_TYPE_SIN227 |
+		INT_CID_FLAG_BEFORE_RING |
+		INT_CID_FLAG_EN_LR |
+		INT_CID_FLAG_EN_DT_AS,                                  // Caller ID Type
+	 	100,                                                    // Pre timeout
+	 	200,                                                    // Post timeout
+	 	0,                                                      // RP-AS period
+	 },
 	 {                                                          // Sample generated tones:
 	    {0, NULL},                                              //   Dial tone
 	    {0, NULL},                                              //   Reorder tone
@@ -93,10 +190,11 @@ static const country_info_t country_info[] = {
 	 },
 	 {                                                          // DDS generated tones:
 		{{350, 450, 0, 0}, -13, 0, {0, 0, 0, 0}},               //   Dial tone
-		{{400, 0, 0, 0}, -10, 2, {400, 350, 225, 525}},         //   Reorder tone
+		{{400, 0, 0, 0}, -13, 2, {400, 350, 225, 525}},         //   Reorder tone
 		{{0, 0, 0, 0}, 0, 0, {0, 0, 0, 0}},                     //   Off-hook tone
 	 },
 	 {25, 2, {400, 200, 400, 200}},                             // Ring
+	 60000,                                                     // Off-hook timeout (mSec)
 	 {1, 2, 3, 4, 5, 6, 7, 8, 9, 0}                             // Rotary map
 	},
 };

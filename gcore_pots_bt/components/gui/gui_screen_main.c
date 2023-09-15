@@ -27,6 +27,7 @@
 #include "gui_task.h"
 #include "pots_task.h"
 #include "power_utilities.h"
+#include "time_utilities.h"
 #include "sys_common.h"
 #include <stdio.h>
 
@@ -70,6 +71,9 @@ static lv_obj_t* btn_dial;
 static lv_obj_t* btn_backspace;
 static lv_obj_t* lbl_btn_backspace;
 
+// Time update task
+static lv_task_t* task_time_update;
+
 // Dial keypad array
 static const char* keyp_map[] = {"1", "2", "3", "\n",
                                  "4", "5", "6", "\n",
@@ -97,9 +101,8 @@ static void _cb_keyp(lv_obj_t* obj, lv_event_t event);
 static void _cb_settings_btn(lv_obj_t* obj, lv_event_t event);
 static void _cb_dial_btn(lv_obj_t* obj, lv_event_t event);
 static void _cb_bcksp_btn(lv_obj_t* obj, lv_event_t event);
-#if (CONFIG_SCREENDUMP_ENABLE == true)
-static void _cb_batt_info_btn(lv_obj_t* obj, lv_event_t event);
-#endif
+static void _set_time_display(bool en);
+static void _update_time_display(lv_task_t* task);
 
 
 
@@ -118,11 +121,6 @@ lv_obj_t* gui_screen_main_create()
 	lbl_batt_info = lv_label_create(screen, NULL);
 	lv_obj_set_pos(lbl_batt_info, MAIN_BATT_LEFT_X, MAIN_BATT_TOP_Y);
 	lv_label_set_static_text(lbl_batt_info, LV_SYMBOL_BATTERY_EMPTY);
-#if (CONFIG_SCREENDUMP_ENABLE == true)
-	// Touching label initiates screendump
-	lv_obj_set_click(lbl_batt_info, true);
-	lv_obj_set_event_cb(lbl_batt_info, _cb_batt_info_btn);
-#endif
 	
 	// Status label
 	lbl_status = lv_label_create(screen, NULL);
@@ -285,63 +283,58 @@ void gui_screen_main_update_status()
 	app_state_t cur_state;
 	bool disp_bt_icon = false;
 	bool disp_hu_icon = false;
+	bool disp_time = false;
 	static bool prev_disp_bt_icon = false;
 	static bool prev_disp_hu_icon = false;
-	static char status_buf[17];     // Sized for largest string below + null
+	static bool prev_disp_time = false;
 	
 	cur_state = app_get_state();
 	
-	memset(status_buf, 0, sizeof(status_buf));
-	
 	switch (cur_state) {
 		case DISCONNECTED:
-			disp_bt_icon = false;
-			disp_hu_icon = false;
-			sprintf(status_buf, "No Service");
+			lv_label_set_static_text(lbl_status, "No Service");
 			break;
 		case CONNECTED_IDLE:
-			// No text displayed
+			// Display time via LVGL task
 			disp_bt_icon = true;
-			disp_hu_icon = false;
+			disp_time = true;
 			break;
 		case CALL_RECEIVED:
 			disp_bt_icon = true;
 			disp_hu_icon = true;
-			sprintf(status_buf, "Incoming Call");
+			lv_label_set_static_text(lbl_status, "Incoming Call");
 			break;
 		case CALL_WAIT_ACTIVE:
 			disp_bt_icon = true;
 			disp_hu_icon = true;
-			sprintf(status_buf, "Incoming Call");
+			lv_label_set_static_text(lbl_status, "Incoming Call");
 			break;
 		case DIALING:
 			disp_bt_icon = true;
-			disp_hu_icon = false;
-			sprintf(status_buf, "Dial Number");
+			lv_label_set_static_text(lbl_status, "Dial Number");
 			break;
 		case CALL_INITIATED:
 			disp_bt_icon = true;
 			disp_hu_icon = true;
-			sprintf(status_buf, "Calling...");
+			lv_label_set_static_text(lbl_status, "Calling...");
 			break;
 		case CALL_ACTIVE:
 		case CALL_ACTIVE_VOICE:
 			disp_bt_icon = true;
 			disp_hu_icon = true;
-			sprintf(status_buf, "Call in Progress");
+			lv_label_set_static_text(lbl_status, "Call in Progress");
 			break;
 		case CALL_WAIT_END:
 			disp_bt_icon = true;
 			disp_hu_icon = true;
-			sprintf(status_buf, "Call Ending...");
+			lv_label_set_static_text(lbl_status, "Call Ending...");
 			break;
 		case CALL_WAIT_ONHOOK:
 			disp_bt_icon = true;
 			disp_hu_icon = true;
-			sprintf(status_buf, "Call Ended");
+			lv_label_set_static_text(lbl_status, "Call Ended");
 			break;
 	}
-	lv_label_set_static_text(lbl_status, status_buf);
 	
 	if (disp_bt_icon != prev_disp_bt_icon) {
 		lv_label_set_static_text(lbl_bt_info, disp_bt_icon ? LV_SYMBOL_BLUETOOTH : "");
@@ -358,24 +351,39 @@ void gui_screen_main_update_status()
 		}
 		prev_disp_hu_icon = disp_hu_icon;
 	}
+	
+	if (disp_time != prev_disp_time) {
+		_set_time_display(disp_time);
+		prev_disp_time = disp_time;
+	}
 }
 
 
 void gui_screen_main_update_ph_num()
 {
-	bool is_dialed;
 	int n;
 	
-	n = app_get_cur_number(phone_num, &is_dialed);
+	n = app_get_dial_number(phone_num);
 	
+	lv_obj_set_style_local_text_color(lbl_phone_num, LV_LABEL_PART_MAIN, LV_STATE_DEFAULT, LV_COLOR_CYAN);
 	if (n == 0) {
 		lv_label_set_static_text(lbl_phone_num, "");
 	} else {
-		if (is_dialed) {
-			lv_obj_set_style_local_text_color(lbl_phone_num, LV_LABEL_PART_MAIN, LV_STATE_DEFAULT, LV_COLOR_CYAN);
-		} else {
-			lv_obj_set_style_local_text_color(lbl_phone_num, LV_LABEL_PART_MAIN, LV_STATE_DEFAULT, LV_COLOR_YELLOW);
-		}
+		lv_label_set_static_text(lbl_phone_num, phone_num);
+	}
+}
+
+
+void gui_screen_main_update_cid_num()
+{
+	int n;
+	
+	n = app_get_cid_number(phone_num);
+	
+	lv_obj_set_style_local_text_color(lbl_phone_num, LV_LABEL_PART_MAIN, LV_STATE_DEFAULT, LV_COLOR_YELLOW);
+	if (n == 0) {
+		lv_label_set_static_text(lbl_phone_num, UNKNOWN_CID_STRING);
+	} else {
 		lv_label_set_static_text(lbl_phone_num, phone_num);
 	}
 }
@@ -454,11 +462,28 @@ static void _cb_bcksp_btn(lv_obj_t* obj, lv_event_t event)
 }
 
 
-#if (CONFIG_SCREENDUMP_ENABLE == true)
-static void _cb_batt_info_btn(lv_obj_t* obj, lv_event_t event)
+static void _set_time_display(bool en)
 {
-	if (event == LV_EVENT_CLICKED) {
-		xTaskNotify(task_handle_gui, GUI_NOTIFY_SCREENDUMP_MASK, eSetBits);
+	if (en) {
+		if (task_time_update == NULL) {
+			task_time_update = lv_task_create(_update_time_display, 1000, LV_TASK_PRIO_LOW, NULL);
+		}
+	} else {
+		if (task_time_update != NULL) {
+			lv_task_del(task_time_update);
+			task_time_update = NULL;
+		}
 	}
 }
-#endif
+
+
+static void _update_time_display(lv_task_t* task)
+{
+	static char time_buf[26];    // Statically allocated for lv_label_set_static_text
+	                             //  and big enough for time from time_get_disp_string
+	tmElements_t tm;
+	
+	time_get(&tm);
+	time_get_disp_string(tm, time_buf);
+	lv_label_set_static_text(lbl_status, time_buf);
+}

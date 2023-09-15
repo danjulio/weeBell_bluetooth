@@ -36,9 +36,6 @@
 #define PIN_FR  33
 #define PIN_SHK 35
 
-// Receiver off-hook detection timing threshold
-#define POTS_RCV_OFF_HOOK_MSEC 60000
-
 
 // Pots Task notifications
 #define POTS_NOTIFY_IN_SERVICE_MASK      0x00000001
@@ -49,6 +46,7 @@
 #define POTS_NOTIFY_MUTE_RING_MASK       0x00000100
 #define POTS_NOTIFY_UNMUTE_RING_MASK     0x00000200
 #define POTS_NOTIFY_RING_MASK            0x00000400
+#define POTS_NOTIFY_DONE_RINGING_MASK    0x00000800
 #define POTS_NOTIFY_EXT_DIAL_DIGIT_MASK  0x00001000
 #define POTS_NOTIFY_NEW_COUNTRY_MASK     0x00010000
 

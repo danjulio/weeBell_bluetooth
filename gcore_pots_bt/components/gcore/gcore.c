@@ -5,7 +5,7 @@
  * NVRAM and control/status registers.  Uses the system's i2c module for thread-safe
  * access.
  *
- * Copyright 2021 Dan Julio
+ * Copyright 2021, 2023 Dan Julio
  *
  * This is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -489,6 +489,67 @@ bool gcore_set_alarm_secs(uint32_t s)
 	if ((ret = i2c_master_write_slave(GCORE_I2C_ADDR, buf, 6)) != ESP_OK) {
 		i2c_unlock();
 		ESP_LOGE(TAG, "failed to write ALARM register (%d)", ret);
+		return false;
+	}
+
+	i2c_unlock();
+
+	return true;
+}
+
+bool gcore_get_corr_secs(uint32_t* s)
+{
+	esp_err_t ret;
+	uint8_t buf[4];
+	uint16_t reg_addr;
+	
+	reg_addr = GCORE_REG_BASE + GCORE_REG_CORR;
+	buf[0] = reg_addr >> 8;
+	buf[1] = reg_addr & 0xFF;
+	
+	i2c_lock();
+	
+	// Write the register address
+	if ((ret = i2c_master_write_slave(GCORE_I2C_ADDR, buf, 2)) != ESP_OK) {
+		i2c_unlock();
+		ESP_LOGE(TAG, "failed to write TIME_CORRECT address (%d)", ret);
+		return false;
+	}
+
+	// Read the register
+	if ((ret = i2c_master_read_slave(GCORE_I2C_ADDR, buf, 4)) != ESP_OK) {
+		i2c_unlock();
+		ESP_LOGE(TAG, "failed to read TIME_CORRECT register (%d)", ret);
+		return false;
+	}
+	
+	i2c_unlock();
+
+	*s = (buf[0] << 24) | (buf[1] << 16) | (buf[2] << 8) | buf[3];
+	return true;
+}
+
+
+bool gcore_set_corr_secs(uint32_t s)
+{
+	esp_err_t ret;
+	uint8_t buf[6];
+	uint16_t reg_addr;
+	
+	reg_addr = GCORE_REG_BASE + GCORE_REG_CORR;
+	buf[0] = reg_addr >> 8;
+	buf[1] = reg_addr & 0xFF;
+	buf[2] = (s >> 24) & 0xFF;
+	buf[3] = (s >> 16) & 0xFF;
+	buf[4] = (s >> 8) & 0xFF;
+	buf[5] = s & 0xFF;
+	
+	i2c_lock();
+	
+	// Write the address + data
+	if ((ret = i2c_master_write_slave(GCORE_I2C_ADDR, buf, 6)) != ESP_OK) {
+		i2c_unlock();
+		ESP_LOGE(TAG, "failed to write TIME_CORRECT register (%d)", ret);
 		return false;
 	}
 

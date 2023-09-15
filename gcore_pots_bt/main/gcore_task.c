@@ -32,13 +32,20 @@
 #include "gcore.h"
 #include "ps.h"
 #include "sys_common.h"
+#include "time_utilities.h"
 
 //
 // Constants
 //
 
+// Battery monitoring count
+#define GCORE_BATT_MON_STEPS (GCORE_BATT_MON_MSEC / GCORE_EVAL_MSEC)
+
 // Power state update count
 #define GCORE_UPD_STEPS (GCORE_PWR_UPDATE_MSEC / GCORE_EVAL_MSEC)
+
+// Time check count
+#define GCORE_TIME_CHECK_STEPS (GCORE_TIME_CHECK_MSEC / GCORE_EVAL_MSEC)
 
 // Dim steps
 #define GCORE_DIM_STEPS (GUI_DIM_MSEC / GCORE_EVAL_MSEC)
@@ -63,6 +70,7 @@
 static const char* TAG = "gcore_task";
 
 // Power state
+static int batt_mon_count = 0;
 static int gui_update_count = 0;
 static int iv_log_update_count = 0;
 static enum BATT_STATE_t upd_batt_state = BATT_0;
@@ -74,6 +82,9 @@ static bool saw_activity = false;
 static bool en_auto_dim;
 static uint8_t backlight_percent;
 
+// Time check state
+static int time_check_count = 0;
+
 // Notification flags - set by a notification and consumed/cleared by state evaluation
 static bool notify_poweroff = false;
 
@@ -82,6 +93,7 @@ static bool notify_poweroff = false;
 //
 // Forward declarations for internal functions
 //
+static void _gcoreSanitizeTime();
 static void _gcoreHandleNotifications();
 static void _gcoreEvalBacklight();
 
@@ -125,6 +137,10 @@ void gcore_task()
 	// Get initial screen brightness information
 	ps_get_brightness_info(&backlight_percent, &en_auto_dim);
 	
+	// Make sure time starts at the beginning of the year 2000
+	time_init();
+	_gcoreSanitizeTime();
+	
 	while (true) {
 		// Get any new notifications
 		_gcoreHandleNotifications();
@@ -132,43 +148,56 @@ void gcore_task()
 		// Backlight intensity update
 		_gcoreEvalBacklight();
 		
-		// Update battery values
-		power_batt_update();
+		// Look for time to get info from gCore
+		if (++batt_mon_count >= GCORE_BATT_MON_STEPS) {
+			batt_mon_count = 0;
 			
-		// Look for power-off button press
-		if (power_button_pressed() || notify_poweroff) {
-			if (notify_poweroff) {
-				ESP_LOGI(TAG, "Power off requested");
-			} else {
-				ESP_LOGI(TAG, "Power button press detected");
+			// Update battery values
+			power_batt_update();
+				
+			// Look for power-off button press
+			if (power_button_pressed() || notify_poweroff) {
+				if (notify_poweroff) {
+					ESP_LOGI(TAG, "Power off requested");
+				} else {
+					ESP_LOGI(TAG, "Power button press detected");
+				}
+				
+#if (CONFIG_SCREENDUMP_ENABLE == true)
+				// When compiled for screendump we trigger a screendump when the
+				// button is pressed (or someone requests a shutdown) instead of
+				// turning off.  The device can be shutdown with a long press or
+				// by reloading code w/o screen dump once the desired images are taken.
+				xTaskNotify(task_handle_gui, GUI_NOTIFY_SCREENDUMP_MASK, eSetBits);
+#else		
+				// Notify bluetooth to disconnect as a courtesy to the remote devcie
+				xTaskNotify(task_handle_bt, BT_NOFITY_DISCONNECT_MASK, eSetBits);
+				
+				// Disable auto-wakeup
+				(void) gcore_set_reg8(GCORE_REG_WK_CTRL, 0);
+				
+				// Delay for message and power down
+				vTaskDelay(pdMS_TO_TICKS(100));
+				power_off();
+#endif
 			}
 			
-			// Notify bluetooth to disconnect as a courtesy to the remote devcie
-			xTaskNotify(task_handle_bt, BT_NOFITY_DISCONNECT_MASK, eSetBits);
-			
-			// Disable auto-wakeup
-			(void) gcore_set_reg8(GCORE_REG_WK_CTRL, 0);
-			
-			// Delay for message and power down
-			vTaskDelay(pdMS_TO_TICKS(100));
-			power_off();
-		}
-		
-		// Look for critical battery shutdown
-		power_get_batt(&cur_batt_status);
+			// Look for critical battery shutdown
+			power_get_batt(&cur_batt_status);
+					
+			if (cur_batt_status.batt_state == BATT_CRIT) {
+				ESP_LOGI(TAG, "Critical battery voltage detected");
 				
-		if (cur_batt_status.batt_state == BATT_CRIT) {
-			ESP_LOGI(TAG, "Critical battery voltage detected");
-			
-			// Notify bluetooth to disconnect as a courtesy to the remote devcie
-			xTaskNotify(task_handle_bt, BT_NOFITY_DISCONNECT_MASK, eSetBits);
-			
-			// Enable auto-wakeup on charge
-			(void) gcore_set_reg8(GCORE_REG_WK_CTRL, GCORE_WK_CHRG_START_MASK);
-			
-			// Delay for message and power down
-			vTaskDelay(pdMS_TO_TICKS(100));
-			power_off();
+				// Notify bluetooth to disconnect as a courtesy to the remote devcie
+				xTaskNotify(task_handle_bt, BT_NOFITY_DISCONNECT_MASK, eSetBits);
+				
+				// Enable auto-wakeup on charge
+				(void) gcore_set_reg8(GCORE_REG_WK_CTRL, GCORE_WK_CHRG_START_MASK);
+				
+				// Delay for message and power down
+				vTaskDelay(pdMS_TO_TICKS(100));
+				power_off();
+			}
 		}
 		
 		// Look for timeout to notify GUI
@@ -192,6 +221,19 @@ void gcore_task()
 					 (int) cur_batt_status.charge_state);
 		}
 		
+		// Occasionally check the ESP32 time with the RTC and update if necessary.  We do
+		// this because it seems at least with IDF v4.4.4, the ESP32 software clock may
+		// lose time with Bluetooth running but on the edge of connectivity with the phone.
+		// So we trust the RTC to be the accurate source.
+		if (++time_check_count >= GCORE_TIME_CHECK_STEPS) {
+			time_check_count = 0;
+			int dt = time_delta();
+			if (abs(dt) >= GCORE_TIME_CHECK_THRESH_SEC) {
+				ESP_LOGE(TAG, "Correcting ESP32 time (delta = %d)", dt);
+				time_init();
+			}
+		}
+		
 		vTaskDelay(pdMS_TO_TICKS(GCORE_EVAL_MSEC));
 	}
 }
@@ -210,6 +252,28 @@ void gcore_get_power_state(enum BATT_STATE_t* bs, enum CHARGE_STATE_t* cs)
 //
 // Internal functions
 //
+static void _gcoreSanitizeTime()
+{
+	tmElements_t tm;
+	
+	time_get(&tm);
+	
+	// tm.Year is offset from 1970
+	if (tm.Year < 30) {
+		tm.Millisecond = 0;
+		tm.Second = 0;
+		tm.Minute = 0;
+		tm.Hour = 0;
+		tm.Wday = 7;  // The new century started on a Saturday! Hung over no doubt...(well at least I probably was)
+		tm.Day = 1;
+		tm.Month = 1;
+		tm.Year = 30;
+		ESP_LOGI(TAG, "Setting RTC to Jan 1 2000");
+		time_set(tm);
+	}
+}
+
+
 static void _gcoreHandleNotifications()
 {
 	uint32_t notification_value = 0;

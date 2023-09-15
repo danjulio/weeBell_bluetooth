@@ -1,8 +1,7 @@
 /*
  * SpanDSP - a series of DSP components for telephony
  *
- * tone_generate.c - General telephony tone generation, and specific
- *                   generation of Bell MF, MFC/R2, and network supervisory tones.
+ * tone_generate.c - General telephony tone generation.
  *
  * Written by Steve Underwood <steveu@coppice.org>
  *
@@ -11,19 +10,17 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
- *
- * $Id: tone_generate.c,v 1.31 2006/11/28 16:59:56 steveu Exp $
  */
 
 /*! \file */
@@ -37,93 +34,90 @@
 #include <math.h>
 
 #include "telephony.h"
+#include "fast_convert.h"
 #include "dc_restore.h"
+#include "complex.h"
 #include "dds.h"
 #include "tone_generate.h"
+
 
 #if !defined(M_PI)
 /* C99 systems may not define M_PI */
 #define M_PI 3.14159265358979323846264338327
 #endif
 
-#define ms_to_samples(t)            (((t)*SAMPLE_RATE)/1000)
-
-void make_tone_gen_descriptor(tone_gen_descriptor_t *s,
-                              int f1,
-                              int l1,
-                              int f2,
-                              int l2,
-                              int d1,
-                              int d2,
-                              int d3,
-                              int d4,
-                              int repeat)
+SPAN_DECLARE(tone_gen_descriptor_t *) tone_gen_descriptor_init(tone_gen_descriptor_t *s,
+                                                               int f1,
+                                                               int l1,
+                                                               int f2,
+                                                               int l2,
+                                                               int d1,
+                                                               int d2,
+                                                               int d3,
+                                                               int d4,
+                                                               int repeat)
 {
-    memset(s, 0, sizeof(*s));
-    if (f1 >= 1)
+    if (s == NULL)
     {
-        s->phase_rate[0] = dds_phase_ratef((float) f1);
-        s->gain[0] = dds_scaling_dbm0f((float) l1);
+        if ((s = (tone_gen_descriptor_t *) malloc(sizeof(*s))) == NULL)
+        {
+            return NULL;
+        }
     }
-    s->modulate = (f2 < 0);
+    memset(s, 0, sizeof(*s));
+
+    if (f1)
+    {
+#if defined(SPANDSP_USE_FIXED_POINT)
+        s->tone[0].phase_rate = dds_phase_rate((float) f1);
+        if (f2 < 0)
+            s->tone[0].phase_rate = -s->tone[0].phase_rate;
+        s->tone[0].gain = dds_scaling_dbm0((float) l1);
+#else
+        s->tone[0].phase_rate = dds_phase_ratef((float) f1);
+        if (f2 < 0)
+            s->tone[0].phase_rate = -s->tone[0].phase_rate;
+        s->tone[0].gain = dds_scaling_dbm0f((float) l1);
+#endif
+    }
     if (f2)
     {
-        s->phase_rate[1] = dds_phase_ratef((float) abs(f2));
-        s->gain[1] = (s->modulate)  ?  (float) l2/100.0f  :  dds_scaling_dbm0f((float) l2);
+#if defined(SPANDSP_USE_FIXED_POINT)
+        s->tone[1].phase_rate = dds_phase_rate((float) abs(f2));
+        s->tone[1].gain = (f2 < 0)  ?  (float) 32767.0f*l2/100.0f  :  dds_scaling_dbm0((float) l2);
+#else
+        s->tone[1].phase_rate = dds_phase_ratef((float) abs(f2));
+        s->tone[1].gain = (f2 < 0)  ?  (float) l2/100.0f  :  dds_scaling_dbm0f((float) l2);
+#endif
     }
 
-    s->duration[0] = d1*8;
-    s->duration[1] = d2*8;
-    s->duration[2] = d3*8;
-    s->duration[3] = d4*8;
+    s->duration[0] = d1*SAMPLE_RATE/1000;
+    s->duration[1] = d2*SAMPLE_RATE/1000;
+    s->duration[2] = d3*SAMPLE_RATE/1000;
+    s->duration[3] = d4*SAMPLE_RATE/1000;
 
     s->repeat = repeat;
+    
+    return s;
 }
 /*- End of function --------------------------------------------------------*/
 
-void make_tone_descriptor(tone_gen_descriptor_t *desc, cadenced_tone_t *tone)
+SPAN_DECLARE(void) tone_gen_descriptor_free(tone_gen_descriptor_t *s)
 {
-    make_tone_gen_descriptor(desc,
-                             tone->f1,
-                             tone->level1,
-                             tone->f2,
-                             tone->level2,
-                             tone->on_time1,
-                             tone->off_time1,
-                             tone->on_time2,
-                             tone->off_time2,
-                             tone->repeat);
+    free(s);
 }
 /*- End of function --------------------------------------------------------*/
 
-void tone_gen_init(tone_gen_state_t *s, tone_gen_descriptor_t *t)
-{
-    int i;
-
-    s->phase_rate[0] = t->phase_rate[0];
-    s->gain[0] = t->gain[0];
-    s->phase_rate[1] = t->phase_rate[1];
-    s->gain[1] = t->gain[1];
-    s->modulate = t->modulate;
-
-    for (i = 0;  i < 4;  i++)
-        s->duration[i] = t->duration[i];
-    s->repeat = t->repeat;
-
-    s->phase[0] = 0;
-    s->phase[1] = 0;
-
-    s->current_section = 0;
-    s->current_position = 0;
-}
-/*- End of function --------------------------------------------------------*/
-
-int tone_gen(tone_gen_state_t *s, int16_t amp[], int max_samples)
+SPAN_DECLARE_NONSTD(int) tone_gen(tone_gen_state_t *s, int16_t amp[], int max_samples)
 {
     int samples;
     int limit;
+#if defined(SPANDSP_USE_FIXED_POINT)
+    int16_t xamp;
+#else
     float xamp;
-    float yamp;
+#endif
+    int i;
 
     if (s->current_section < 0)
         return  0;
@@ -143,24 +137,52 @@ int tone_gen(tone_gen_state_t *s, int16_t amp[], int max_samples)
         }
         else
         {
-            for (  ;  samples < limit;  samples++)
+            if (s->tone[0].phase_rate < 0)
             {
-                xamp = 0.0;
-                if (s->phase_rate[0])
-                    xamp = dds_modf(&(s->phase[0]), s->phase_rate[0], s->gain[0], 0);
-                if (s->phase_rate[1])
+                /* Modulated tone */
+                for (  ;  samples < limit;  samples++)
                 {
-                    yamp = dds_modf(&(s->phase[1]), s->phase_rate[1], s->gain[1], 0);
-                    if (s->modulate)
-                        xamp *= (1.0f + yamp);
-                    else
-                        xamp += yamp;
+                    /* There must be two, and only two, tones */
+#if defined(SPANDSP_USE_FIXED_POINT)
+                    xamp = ((int32_t) dds_mod(&s->phase[0], -s->tone[0].phase_rate, s->tone[0].gain, 0)
+                            *(32767 + (int32_t) dds_mod(&s->phase[1], s->tone[1].phase_rate, s->tone[1].gain, 0))) >> 15;
+                    amp[samples] = xamp;
+#else
+                    xamp = dds_modf(&s->phase[0], -s->tone[0].phase_rate, s->tone[0].gain, 0)
+                         *(1.0f + dds_modf(&s->phase[1], s->tone[1].phase_rate, s->tone[1].gain, 0));
+                    amp[samples] = (int16_t) lfastrintf(xamp);
+#endif
                 }
-                /* Saturation of the answer is the right thing at this point.
-                   However, we are normally generating well controlled tones,
-                   that cannot clip. So, the overhead of doing saturation is
-                   a waste of valuable time. */
-                amp[samples] = (int16_t) lrintf(xamp);
+            }
+            else
+            {
+                for (  ;  samples < limit;  samples++)
+                {
+#if defined(SPANDSP_USE_FIXED_POINT)
+                    xamp = 0;
+#else
+                    xamp = 0.0f;
+#endif
+                    for (i = 0;  i < 4;  i++)
+                    {
+                        if (s->tone[i].phase_rate == 0)
+                            break;
+#if defined(SPANDSP_USE_FIXED_POINT)
+                        xamp += dds_mod(&s->phase[i], s->tone[i].phase_rate, s->tone[i].gain, 0);
+#else
+                        xamp += dds_modf(&s->phase[i], s->tone[i].phase_rate, s->tone[i].gain, 0);
+#endif
+                    }
+                    /* Saturation of the answer is the right thing at this point.
+                       However, we are normally generating well controlled tones,
+                       that cannot clip. So, the overhead of doing saturation is
+                       a waste of valuable time. */
+#if defined(SPANDSP_USE_FIXED_POINT)
+                    amp[samples] = xamp;
+#else
+                    amp[samples] = (int16_t) lfastrintf(xamp);
+#endif
+                }
             }
         }
         if (s->current_position >= s->duration[s->current_section])
@@ -179,6 +201,49 @@ int tone_gen(tone_gen_state_t *s, int16_t amp[], int max_samples)
         }
     }
     return samples;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(tone_gen_state_t *) tone_gen_init(tone_gen_state_t *s, tone_gen_descriptor_t *t)
+{
+    int i;
+
+    if (s == NULL)
+    {
+        if ((s = (tone_gen_state_t *) malloc(sizeof(*s))) == NULL)
+        {
+            return NULL;
+        }
+    }
+    memset(s, 0, sizeof(*s));
+
+    for (i = 0;  i < 4;  i++)
+    {
+        s->tone[i] = t->tone[i];
+        s->phase[i] = 0;
+    }
+
+    for (i = 0;  i < 4;  i++)
+        s->duration[i] = t->duration[i];
+    s->repeat = t->repeat;
+
+    s->current_section = 0;
+    s->current_position = 0;
+    return s;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) tone_gen_release(tone_gen_state_t *s)
+{
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) tone_gen_free(tone_gen_state_t *s)
+{
+    if (s)
+        free(s);
+    return 0;
 }
 /*- End of function --------------------------------------------------------*/
 /*- End of file ------------------------------------------------------------*/

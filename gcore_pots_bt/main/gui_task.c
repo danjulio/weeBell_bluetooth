@@ -37,6 +37,7 @@
 #include "touch_driver.h"
 #include "gui_screen_main.h"
 #include "gui_screen_settings.h"
+#include "gui_screen_time.h"
 #include "gui_utilities.h"
 #if (CONFIG_SCREENDUMP_ENABLE == true)
 #include "mem_fb.h"
@@ -136,6 +137,7 @@ void gui_set_screen(int n)
 		
 		gui_screen_main_set_active(n == GUI_SCREEN_MAIN);
 		gui_screen_settings_set_active(n == GUI_SCREEN_SETTINGS);
+		gui_screen_time_set_active(n == GUI_SCREEN_TIME);
 		
 		lv_scr_load(gui_screens[n]);
 	}
@@ -265,6 +267,7 @@ static void _gui_screen_init()
 	// Create the various screens
 	gui_screens[GUI_SCREEN_MAIN] = gui_screen_main_create();
 	gui_screens[GUI_SCREEN_SETTINGS] = gui_screen_settings_create();
+	gui_screens[GUI_SCREEN_TIME] = gui_screen_time_create();
 }
 
 
@@ -273,8 +276,8 @@ static void _gui_add_subtasks()
 	// Event handler sub-task runs every GUI_TASK_EVAL_MSEC mSec
 	gui_event_subtask = lv_task_create(_gui_event_handler_task, GUI_TASK_EVAL_MSEC, LV_TASK_PRIO_MID, NULL);
 	
-	// Touch activity detection runs once per second
-	gui_activity_subtask = lv_task_create(_gui_activity_handler_task, 1000, LV_TASK_PRIO_LOW, NULL);
+	// Touch activity detection runs twice per second
+	gui_activity_subtask = lv_task_create(_gui_activity_handler_task, 500, LV_TASK_PRIO_LOW, NULL);
 	
 	// Message box display sub-task runs every GUI_EVAL_MSEC mSec
 	gui_messagebox_subtask = lv_task_create(_gui_task_messagebox_handler_task, GUI_TASK_EVAL_MSEC,
@@ -298,6 +301,10 @@ static void _gui_event_handler_task(lv_task_t * task)
 		
 		if (Notification(notification_value, GUI_NOTIFY_PH_NUM_UPDATE_MASK)) {
 			gui_screen_main_update_ph_num();
+		}
+		
+		if (Notification(notification_value, GUI_NOTIFY_CID_NUM_UPDATE_MASK)) {
+			gui_screen_main_update_cid_num();
 		}
 		
 		if (Notification(notification_value, GUI_NOTIFY_UPDATE_MIC_GAIN_MASK)) {

@@ -40,6 +40,11 @@
 #define SETTINGS_SCR_LBL_TOP_Y  20
 #define SETTINGS_SCR_LBL_W      200
 
+// Version info (right justified)
+#define SETTINGS_VER_LBL_LEFT_X 230
+#define SETTINGS_VER_LBL_TOP_Y  22
+#define SETTINGS_VER_LBL_W      70
+
 // Bluetooth controls
 #define SETTINGS_BT_LBL_LEFT_X  20
 #define SETTINGS_BT_LBL_TOP_Y   70
@@ -95,16 +100,26 @@
 #define SETTINGS_SPK_SLD_W      180
 #define SETTINGS_SPK_SLD_H      20
 
-// Version info (right justified)
-#define SETTINGS_VER_LBL_LEFT_X 230
-#define SETTINGS_VER_LBL_TOP_Y  450
-#define SETTINGS_VER_LBL_W      70
+// Set time controls
+#if (CONFIG_AUDIO_SAMPLE_ENABLE == true)
+#define SETTINGS_TIME_LBL_LEFT_X 80
+#define SETTINGS_TIME_LBL_TOP_Y  440
 
 // Audio sample trigger button (only displayed when CONFIG_AUDIO_SAMPLE_ENABLE defined)
 #define SETTINGS_SMPL_BTN_LEFT_X 20
-#define SETTINGS_SMPL_BTN_TOP_Y  450
+#define SETTINGS_SMPL_BTN_TOP_Y  440
 #define SETTINGS_SMPL_BTN_W      40
 #define SETTINGS_SMPL_BTN_H      30
+
+#else
+#define SETTINGS_TIME_LBL_LEFT_X 20
+#define SETTINGS_TIME_LBL_TOP_Y  440
+#endif
+
+#define SETTINGS_TIME_BTN_LEFT_X 260
+#define SETTINGS_TIME_BTN_TOP_Y  425
+#define SETTINGS_TIME_BTN_W      50
+#define SETTINGS_TIME_BTN_H      50
 
 
 

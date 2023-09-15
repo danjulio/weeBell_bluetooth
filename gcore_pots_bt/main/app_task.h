@@ -83,7 +83,8 @@ void app_task();
 void app_set_gui_digit(char c);                      // Set by gui_task before sending notification
 void app_set_pots_digit(char c);                     // Set by pots_task before sending notification
 void app_set_cid_number(const char* pn);             // Set by bt_task before sending notification
-int app_get_cur_number(char* pn, bool* is_dialed);   // Called to get the current phone number (dialed or CID)
+int app_get_cid_number(char* pn);                    // Called to get the current caller ID phone number
+int app_get_dial_number(char* pn);                   // Called to get the current dialed phone number
 app_state_t app_get_state();
 void app_set_new_mic_gain(float g);                  // Called before sending BT_MIC_NEW_GAIN
 void app_set_new_spk_gain(float g);                  // Called before sending BT_SPK_NEW_GAIN

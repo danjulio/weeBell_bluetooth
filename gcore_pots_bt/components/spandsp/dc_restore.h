@@ -11,27 +11,23 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
- *
- * $Id: dc_restore.h,v 1.15 2006/12/01 18:00:48 steveu Exp $
  */
 
 /*! \file */
 
-#if !defined(_DC_RESTORE_H_)
-#define _DC_RESTORE_H_
-
-#include <math.h>
+#if !defined(_SPANDSP_DC_RESTORE_H_)
+#define _SPANDSP_DC_RESTORE_H_
 
 /*! \page dc_restore_page Removing DC bias from a signal
 
@@ -63,8 +59,9 @@ typedef struct
     int32_t state;
 } dc_restore_state_t;
 
-#ifdef __cplusplus
-extern "C" {
+#if defined(__cplusplus)
+extern "C"
+{
 #endif
 
 static __inline__ void dc_restore_init(dc_restore_state_t *dc)
@@ -86,41 +83,7 @@ static __inline__ int16_t dc_restore_estimate(dc_restore_state_t *dc)
 }
 /*- End of function --------------------------------------------------------*/
 
-static __inline__ int16_t saturate(int32_t amp)
-{
-    int16_t amp16;
-
-    /* Hopefully this is optimised for the common case - not clipping */
-    amp16 = (int16_t) amp;
-    if (amp == amp16)
-        return amp16;
-    if (amp > INT16_MAX)
-        return  INT16_MAX;
-    return  INT16_MIN;
-}
-/*- End of function --------------------------------------------------------*/
-
-static __inline__ int16_t fsaturatef(float famp)
-{
-    if (famp > 32767.0)
-        return  INT16_MAX;
-    if (famp < -32768.0)
-        return  INT16_MIN;
-    return (int16_t) rintf(famp);
-}
-/*- End of function --------------------------------------------------------*/
-
-static __inline__ int16_t fsaturate(double damp)
-{
-    if (damp > 32767.0)
-        return  INT16_MAX;
-    if (damp < -32768.0)
-        return  INT16_MIN;
-    return (int16_t) rint(damp);
-}
-/*- End of function --------------------------------------------------------*/
-
-#ifdef __cplusplus
+#if defined(__cplusplus)
 }
 #endif
 

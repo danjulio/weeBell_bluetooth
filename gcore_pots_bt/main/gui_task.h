@@ -39,8 +39,9 @@
 // Screen indicies
 #define GUI_SCREEN_MAIN            0
 #define GUI_SCREEN_SETTINGS        1
+#define GUI_SCREEN_TIME            2
 
-#define GUI_NUM_SCREENS            2
+#define GUI_NUM_SCREENS            3
 
 // Screen brightness values (integer percent)
 //   MIN_PERCENT must be greater than DIM_PERCENT
@@ -53,7 +54,7 @@
 
 // Dim animation time
 #define GUI_DIM_MSEC               1000
-#define GUI_BRT_MSEC               250
+#define GUI_BRT_MSEC               400
 
 // Background color (should match theme background - A kludge, I know.  Specified here because
 // themes don't allow direct access to it and IMHO the LVGL theme system is incredibly hard to use)
@@ -75,6 +76,7 @@
 #define GUI_NOTIFY_POWER_UPDATE_MASK         0x00000001
 #define GUI_NOTIFY_STATUS_UPDATE_MASK        0x00000002
 #define GUI_NOTIFY_PH_NUM_UPDATE_MASK        0x00000004
+#define GUI_NOTIFY_CID_NUM_UPDATE_MASK       0x00000008
 #define GUI_NOTIFY_UPDATE_MIC_GAIN_MASK      0x00000010
 #define GUI_NOTIFY_UPDATE_SPK_GAIN_MASK      0x00000020
 #define GUI_NOTIFY_NEW_SSP_PIN_MASK          0x00000100

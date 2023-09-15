@@ -54,7 +54,10 @@ static const char* TAG = "gui_screen_settings";
 
 // LVGL widget objects
 static lv_obj_t* screen;
+static lv_obj_t* btn_bck;
+static lv_obj_t* btn_bck_lbl;
 static lv_obj_t* lbl_screen;
+static lv_obj_t* lbl_ver;
 static lv_obj_t* lbl_bt;
 static lv_obj_t* btn_bt;
 static lv_obj_t* btn_bt_lbl;
@@ -69,9 +72,9 @@ static lv_obj_t* lbl_mic;
 static lv_obj_t* sld_mic;
 static lv_obj_t* lbl_spk;
 static lv_obj_t* sld_spk;
-static lv_obj_t* btn_bck;
-static lv_obj_t* btn_bck_lbl;
-static lv_obj_t* lbl_ver;
+static lv_obj_t* lbl_time;
+static lv_obj_t* btn_time;
+static lv_obj_t* btn_time_lbl;
 
 #if (CONFIG_AUDIO_SAMPLE_ENABLE == true)
 static lv_obj_t* btn_smpl;
@@ -113,12 +116,10 @@ static void _cb_bl_sld(lv_obj_t* obj, lv_event_t event);
 static void _sw_ad_cb(lv_obj_t* obj, lv_event_t event);
 static void _cb_cn_dd(lv_obj_t* obj, lv_event_t event);
 static void _cb_gain_sld(lv_obj_t* obj, lv_event_t event);
+static void _cb_set_time(lv_obj_t* obj, lv_event_t event);
 static void _cb_pair_timer_task(lv_task_t* task);
 static void _start_pairing();
 static void _stop_pairing();
-#if (CONFIG_SCREENDUMP_ENABLE == true)
-static void _cb_ver_btn(lv_obj_t* obj, lv_event_t event);
-#endif
 #if (CONFIG_AUDIO_SAMPLE_ENABLE == true)
 static void _cb_smpl_btn(lv_obj_t* obj, lv_event_t event);
 #endif
@@ -159,6 +160,16 @@ lv_obj_t* gui_screen_settings_create()
 	lv_obj_set_width(lbl_screen, SETTINGS_SCR_LBL_W);
 	lv_obj_set_style_local_text_font(lbl_screen, LV_LABEL_PART_MAIN, LV_STATE_DEFAULT, &lv_font_montserrat_20);
 	lv_label_set_static_text(lbl_screen, "Settings");
+		
+	// Version label
+	lbl_ver = lv_label_create(screen, NULL);
+	lv_obj_set_pos(lbl_ver, SETTINGS_VER_LBL_LEFT_X, SETTINGS_VER_LBL_TOP_Y);
+	lv_label_set_long_mode(lbl_ver, LV_LABEL_LONG_BREAK);
+	lv_label_set_align(lbl_ver, LV_LABEL_ALIGN_RIGHT);
+	lv_obj_set_width(lbl_ver, SETTINGS_VER_LBL_W);
+	app_desc = esp_ota_get_app_description();
+	sprintf(ver_buf, "v%s", app_desc->version);
+	lv_label_set_static_text(lbl_ver, ver_buf);
 	
 	// Bluetooth controls label
 	lbl_bt = lv_label_create(screen, NULL);
@@ -254,20 +265,24 @@ lv_obj_t* gui_screen_settings_create()
 	lv_slider_set_range(sld_spk, GAIN_APP_SPK_MIN_DB, GAIN_APP_SPK_MAX_DB);
 	lv_obj_set_event_cb(sld_spk, _cb_gain_sld);
 	
-	// Version label
-	lbl_ver = lv_label_create(screen, NULL);
-	lv_obj_set_pos(lbl_ver, SETTINGS_VER_LBL_LEFT_X, SETTINGS_VER_LBL_TOP_Y);
-	lv_label_set_long_mode(lbl_ver, LV_LABEL_LONG_BREAK);
-	lv_label_set_align(lbl_ver, LV_LABEL_ALIGN_RIGHT);
-	lv_obj_set_width(lbl_ver, SETTINGS_VER_LBL_W);
-	app_desc = esp_ota_get_app_description();
-	sprintf(ver_buf, "v%s", app_desc->version);
-	lv_label_set_static_text(lbl_ver, ver_buf);
-#if (CONFIG_SCREENDUMP_ENABLE == true)
-	// Touching label initiates screendump
-	lv_obj_set_click(lbl_ver, true);
-	lv_obj_set_event_cb(lbl_ver, _cb_ver_btn);
-#endif
+	// Set time control label
+	lbl_time = lv_label_create(screen, NULL);
+	lv_obj_set_pos(lbl_time, SETTINGS_TIME_LBL_LEFT_X, SETTINGS_TIME_LBL_TOP_Y);
+	lv_label_set_static_text(lbl_time, "Time/Date");
+	
+	// Set time control
+	btn_time = lv_btn_create(screen, NULL);
+	lv_obj_set_pos(btn_time, SETTINGS_TIME_BTN_LEFT_X, SETTINGS_TIME_BTN_TOP_Y);
+	lv_obj_set_size(btn_time, SETTINGS_TIME_BTN_W, SETTINGS_TIME_BTN_H);
+	lv_obj_set_style_local_bg_color(btn_time, LV_BTN_PART_MAIN, LV_STATE_PRESSED, GUI_THEME_BG_COLOR);
+	lv_obj_set_style_local_border_color(btn_time, LV_BTN_PART_MAIN, LV_STATE_DEFAULT, GUI_THEME_BG_COLOR);
+	lv_obj_set_style_local_bg_color(btn_time, LV_BTN_PART_MAIN, LV_STATE_DEFAULT, GUI_THEME_BG_COLOR);
+	lv_obj_set_style_local_border_color(btn_time, LV_BTN_PART_MAIN, LV_STATE_PRESSED, lv_theme_get_color_secondary());
+	lv_obj_set_event_cb(btn_time, _cb_set_time);
+	
+	btn_time_lbl = lv_label_create(btn_time, NULL);
+	lv_obj_set_style_local_text_font(btn_time_lbl, LV_LABEL_PART_MAIN, LV_STATE_DEFAULT, &lv_font_montserrat_34);
+	lv_label_set_static_text(btn_time_lbl, LV_SYMBOL_RIGHT);
 
 #if (CONFIG_AUDIO_SAMPLE_ENABLE == true)
 	// Button to trigger audio sample acquisition
@@ -559,6 +574,19 @@ static void _cb_gain_sld(lv_obj_t* obj, lv_event_t event)
 }
 
 
+static void _cb_set_time(lv_obj_t* obj, lv_event_t event)
+{
+	if (event == LV_EVENT_CLICKED) {
+		// Save any changes to battery backed RAM on exit
+		if (update_ps_ram) {
+			ps_update_backing_store();
+		}
+		
+		gui_set_screen(GUI_SCREEN_TIME);
+	}
+}
+
+
 static void _cb_pair_timer_task(lv_task_t* task)
 {
 	// Pairing timed out with no new pairing info
@@ -616,16 +644,6 @@ static void _stop_pairing()
 		lv_label_set_static_text(lbl_bt_status, "Not paired");
 	}
 }
-
-
-#if (CONFIG_SCREENDUMP_ENABLE == true)
-static void _cb_ver_btn(lv_obj_t* obj, lv_event_t event)
-{
-	if (event == LV_EVENT_CLICKED) {
-		xTaskNotify(task_handle_gui, GUI_NOTIFY_SCREENDUMP_MASK, eSetBits);
-	}
-}
-#endif
 
 
 #if (CONFIG_AUDIO_SAMPLE_ENABLE == true)

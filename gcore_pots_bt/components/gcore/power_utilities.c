@@ -24,15 +24,14 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
-#include "freertos/task.h" // ??? DEBUG I2C
-#include "driver/gpio.h"   // ??? DEBUG I2C
-#include "rom/ets_sys.h"   // ??? DEBUG I2C
+#include "driver/gpio.h"   // DEBUG I2C
+#include "rom/ets_sys.h"   // DEBUG I2C
 #include "gcore.h"
 #include "power_utilities.h"
 
 
 // DEBUG I2C
-#define DEBUG_I2C
+//#define DEBUG_I2C
 
 #ifdef DEBUG_I2C
 #define PIN_TRIG 4
@@ -150,10 +149,11 @@ bool power_init()
 	(void) gcore_get_reg8(GCORE_REG_STATUS, &t8);
 	power_btn_pressed = false;
 	
-	// ??? DEBUG I2C
+#ifdef DEBUG_I2C
 	gpio_reset_pin(PIN_TRIG);
 	gpio_set_direction(PIN_TRIG, GPIO_MODE_OUTPUT);
 	gpio_set_level(PIN_TRIG, 0);
+#endif
 	
 	return true;
 }
@@ -230,14 +230,14 @@ void power_batt_update()
 	if (gcore_get_reg8(GCORE_REG_STATUS, &t8)) {
 		if (validate_status(t8)) {
 			btn = (t8 & GCORE_ST_PB_PRESS_MASK);
-#ifdef DEBUG_I2C
 		} else {
+#ifdef DEBUG_I2C
 			gpio_set_level(PIN_TRIG, 1);
 			ets_delay_us(20);
 			gpio_set_level(PIN_TRIG, 0);
+#endif
 			ESP_LOGE(TAG, "Illegal STATUS = 0x%x", t8);
 		}
-#endif
 	}
 	
 	xSemaphoreTake(status_mutex, portMAX_DELAY);

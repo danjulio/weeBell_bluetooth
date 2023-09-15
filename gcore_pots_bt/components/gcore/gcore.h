@@ -5,7 +5,7 @@
  * NVRAM and control/status registers.  Uses the system's i2c module for thread-safe
  * access.
  *
- * Copyright 2021 Dan Julio
+ * Copyright 2021, 2023 Dan Julio
  *
  * This is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -139,5 +139,7 @@ bool gcore_get_time_secs(uint32_t* s);
 bool gcore_set_time_secs(uint32_t s);
 bool gcore_get_alarm_secs(uint32_t* s);
 bool gcore_set_alarm_secs(uint32_t s);
+bool gcore_get_corr_secs(uint32_t* s);
+bool gcore_set_corr_secs(uint32_t s);
 
 #endif /* GCORE_H */

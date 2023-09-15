@@ -33,16 +33,25 @@
 //
 
 // Task evaluation period (mSec)
-#define GCORE_EVAL_MSEC                 100
+#define GCORE_EVAL_MSEC                 50
+
+// Battery monitoring interval
+#define GCORE_BATT_MON_MSEC             250
 
 // Button power-off press detection threshold (mSec)
-#define GCORE_BTN_THRESH_MSEC           250
+#define GCORE_BTN_THRESH_MSEC           200
 
 // GUI Power status update rate (mSec)
-#define GCORE_PWR_UPDATE_MSEC           1000
+#define GCORE_PWR_UPDATE_MSEC           (1 * 1000)
 
-// Voltage/Current level logging frequency
-#define GCORE_LOG_IV_INFO_MSEC          60000
+// Voltage/Current level logging rate (mSec)
+#define GCORE_LOG_IV_INFO_MSEC          (60 * 1000)
+
+// Time check from RTC rate (mSec)
+#define GCORE_TIME_CHECK_MSEC           (3600 * 1000)
+
+// Time check error threshold (sec)
+#define GCORE_TIME_CHECK_THRESH_SEC     10
 
 // Notifications
 #define GCORE_NOTIFY_SHUTOFF_MASK       0x00000002

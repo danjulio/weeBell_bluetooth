@@ -44,6 +44,9 @@
 #define BLUETOOTH_PIN_STRING "2143"
 extern const esp_bt_pin_code_t bt_trad_pin;   /* owned by bt_task */
 
+// Caller ID String to use for GUI and Caller ID transmission for no number
+#define UNKNOWN_CID_STRING "Unknown"
+
 // Task handles used to send notifications between tasks (owned by app_task)
 extern TaskHandle_t task_handle_app;
 extern TaskHandle_t task_handle_audio;

@@ -67,12 +67,6 @@
 #define MAIN_KEYP_H          256
 
 // Settings button
-/*
-#define MAIN_SETTINGS_LEFT_X 40
-#define MAIN_SETTINGS_TOP_Y  405
-#define MAIN_SETTINGS_W      50
-#define MAIN_SETTINGS_H      50
-*/
 #define MAIN_SETTINGS_LEFT_X 40
 #define MAIN_SETTINGS_TOP_Y  406
 #define MAIN_SETTINGS_W      50
@@ -101,5 +95,6 @@ void gui_screen_main_set_active(bool en);
 void gui_screen_main_update_power_state();
 void gui_screen_main_update_status();
 void gui_screen_main_update_ph_num();
+void gui_screen_main_update_cid_num();
 
 #endif /* GUI_SCREEN_MAIN_H_ */

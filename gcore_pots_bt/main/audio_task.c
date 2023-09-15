@@ -36,11 +36,10 @@
 #include "freertos/semphr.h"
 #include "freertos/queue.h"
 #include "driver/i2s.h"
-#include "dc_restore.h"
-#include "echo.h"
 #include "gain.h"
 #include "ps.h"
 #include "sample.h"
+#include "spandsp.h"
 #include "sys_common.h"
 
 

@@ -24,6 +24,7 @@
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
  */
+#include <stdlib.h>
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -31,11 +32,11 @@
 #include "app_task.h"
 #include "audio_task.h"
 #include "pots_task.h"
-#include "dtmf.h"
 #include "international.h"
 #include "ps.h"
-#include "super_tone_tx.h"
+#include "spandsp.h"
 #include "sys_common.h"
+#include "time_utilities.h"
 
 //
 // Local constants
@@ -45,6 +46,7 @@
 #define POTS_STATE_DEBUG
 //#define POTS_DIAL_DEBUG
 //#define POTS_RING_DEBUG
+#define POTS_CID_DEBUG
 
 // State machine evaluation interval
 #define POTS_EVAL_MSEC           10
@@ -58,8 +60,9 @@
 #define POTS_ROT_BREAK_MSEC      100
 #define POTS_ROT_MAKE_MSEC       100
 
-// Post send DTMF tone wait period to allow audio buffers to drain of echoed back DTMF digit
-#define POTS_DTMF_FLUSH_MSEC     30
+// Post send DTMF tone or CID message wait period to allow audio buffers to drain of echoed back audio
+// (to prevent it from confusing the echo canceller if it gets switched in)
+#define POTS_AUDIO_FLUSH_MSEC     30
 
 // Maximum number of tone steps
 #define POTS_MAX_TONE_STEPS      (INT_MAX_TONE_PAIRS * 2)
@@ -83,59 +86,73 @@ static uint8_t country_code;
 static const country_info_t* country_code_infoP;
 
 // Call state
-static bool pots_in_service;             // Set if the phone can make a call, clear if it isn't in service
-static bool pots_has_call_audio;         // Set when the external process has a connected phone call (used to suppress off-hook tone, enable audio)
-static bool pots_call_audio_16k;         // Set when connected phone call is using 16k samples/sec (false for 8k samples/sec)
+static bool pots_in_service = false;       // Set if the phone can make a call, clear if it isn't in service
+static bool pots_has_call_audio = false;   // Set when the external process has a connected phone call (used to suppress off-hook tone, enable audio)
+static bool pots_call_audio_16k;           // Set when connected phone call is using 16k samples/sec (false for 8k samples/sec)
 
 // Hook logic
 typedef enum {ON_HOOK, OFF_HOOK, ON_HOOK_PROVISIONAL} pots_stateT;
 #ifdef POTS_STATE_DEBUG
 static const char* pots_state_name[] = {"ON_HOOK", "OFF_HOOK", "ON_HOOK_PROVISIONAL"};
 #endif
-static pots_stateT pots_state;
-static int pots_state_count;             // Down counter for phone state change detection
-static bool pots_cur_off_hook;           // Debounced off-hook state
-static bool pots_saw_hook_state_change;  // For API notification
+static pots_stateT pots_state = ON_HOOK;
+static int pots_state_count;                     // Down counter for phone state change detection
+static bool pots_cur_off_hook = false;           // Debounced off-hook state
+static bool pots_saw_hook_state_change = false;  // For API notification
 
 // Ring logic
-static bool pots_do_not_disturb;         // Inhibits ringing
-static bool pots_ring_request;           // Ringing requested
+static bool pots_do_not_disturb = false;         // Inhibits ringing
+static bool pots_trigger_pots_ring = false;      // Trigger a ring associated with an incoming call
+static bool pots_trigger_cid_ring = false;       // Trigger a RP-AS alert ring associated with Caller ID
 typedef enum {RING_IDLE, RING_PULSE_ON, RING_PULSE_OFF, RING_STEP_WAIT} pots_ring_stateT;
 #ifdef POTS_RING_DEBUG
 static const char* pots_ring_state_name[] = {"RING_IDLE", "RING_PULSE_ON", "RING_PULSE_OFF", "RING_STEP_WAIT"};
 #endif
-static pots_ring_stateT pots_ring_state;
+static pots_ring_stateT pots_ring_state = RING_IDLE;
 static int pots_num_ring_steps;          // Number of steps in a ring (at least 2 for a single ON/OFF)
 static int pots_ring_step;               // The current cadence step
 static int pots_ring_period_count;       // Counts down evaluation cycles for each ringing state
 static int pots_ring_pulse_count;        // Counts down pulses in one ring ON or OFF portion
-
+static int pots_ring_num = 0;            // Number of rings starting with 0 (used by CID)
 
 // Dialing logic
 typedef enum {DIAL_IDLE, DIAL_BREAK, DIAL_MAKE} pots_dial_stateT;
 #ifdef POTS_DIAL_DEBUG
 static const char* pots_dial_state_name[] = {"DIAL_IDLE", "DIAL_BREAK", "DIAL_MAKE"};
 #endif
-static pots_dial_stateT pots_dial_state;
+static pots_dial_stateT pots_dial_state = DIAL_IDLE;
 static int pots_dial_period_count;       // Counts up evaluation cycles for each dialing state
 static int pots_dial_pulse_count;        // Counts pulses from the rotary dial for one digit
 static char pots_dial_cur_digit;         // 0 - 9, A - D, *, #
-static char pots_dial_last_dtmf_digit;
+static char pots_dial_last_dtmf_digit = ' ';
 
 // Tone generation logic
 typedef enum {TONE_IDLE, TONE_VOICE, TONE_VOICE_WAIT_HANGUP, TONE_DIAL, TONE_DIAL_QUIET,
-              TONE_DTMF, TONE_DTMF_FLUSH, TONE_NO_SERVICE, TONE_OFF_HOOK
+              TONE_DTMF, TONE_DTMF_FLUSH, TONE_NO_SERVICE, TONE_OFF_HOOK, TONE_CID, TONE_CID_FLUSH
              } pots_tone_stateT;
 #ifdef POTS_STATE_DEBUG
 static const char* pots_tone_state_name[] = {"TONE_IDLE", "TONE_VOICE", "TONE_VOICE_WAIT_HANGUP",
                                              "TONE_DIAL", "TONE_DIAL_QUIET", "TONE_DTMF", 
-                                             "TOND_DIAL_FLUSH", "TONE_NO_SERVICE", "TONE_OFF_HOOK"
+                                             "TOND_DIAL_FLUSH", "TONE_NO_SERVICE", "TONE_OFF_HOOK",
+                                             "TONE_CID", "TONE_CID_FLUSH"
                                             };
 #endif
-static pots_tone_stateT pots_tone_state;
-static int pots_tone_timer_count;
-static bool pots_notify_ext_digit_dialed; // Set by notification when another task dials a digit
-                                          // (used to suppress dial tone and generate DTMF here)
+static pots_tone_stateT pots_tone_state = TONE_IDLE;
+static int pots_tone_timer_count = 0;             // Evaluation down count timer for tone logic
+static bool pots_notify_ext_digit_dialed = false; // Set by notification when another task dials a digit
+                                                  // (used to suppress dial tone and generate DTMF here)
+
+// Caller ID logic
+static bool pots_trigger_cid = false;
+typedef enum {CID_IDLE, CID_RP_AS, CID_PRE_MSG_WAIT, CID_MSG, CID_POST_MSG_WAIT} pots_cid_stateT;
+#ifdef POTS_CID_DEBUG
+static const char* pots_cid_state_name[] = {"CID_IDLE", "CID_RP_AS", "CID_PRE_MSG_WAIT", "CID_MSG", "CID_POST_MSG_WAIT"};
+#endif
+static pots_cid_stateT pots_cid_state = CID_IDLE;
+static int pots_cid_wait_count;           // Counts down evaluation cycles for each CID delay
+static adsi_tx_state_t* cid_tx_stateP;
+static uint8_t adsi_msg_buf[64];          // Buffer to hold complete CID message for spandsp
+                                          // must be larger that maximum message (date + caller phone #)
 
 // DDS Tone generator
 static int16_t tone_tx_buf[POTS_TONE_BUF_LEN];
@@ -166,17 +183,23 @@ static dtmf_tx_state_t dtmf_tx_state;
 //
 static void _potsInitGPIO();
 static void _potsInitTones(bool init);
+static void _potsLineReverse(bool en);
+static void _potsLineRingMode(bool en);
 static void _potsHandleNotifications();
 static bool _potsEvalHook();
 static void _potsEvalPhoneState(bool hookChange);
 static void _potsEvalRinger();
-static void _potsStartRing();
+static void _potsStartRing(bool is_rp_as);
 static void _potsEndRing();
 static int _potsGetRingPulseCount(bool on_portion);
+static void _potsEvalCID();
+static bool _potsSetupCID();
+static int _potsLocaleToCIDstandard();
 static bool _potsEvalDialer(bool hookChange);
 static void _potsSetToneState(pots_tone_stateT ns);
 static void _potsEvalToneState(bool potsDigitDialed, bool appDigitDialed);
 static bool _potsEvalToneGen();
+static bool _potsToneTimerExpired();
 static void _potsSendDialedDigit(char d);
 static void _potsSetAudioOutput(pots_tone_stateT s);
 static void _potsSetupAudioTone(int tone_index);
@@ -196,23 +219,12 @@ void pots_task(void* args)
 	
   	ESP_LOGI(TAG, "Start task");
   	
-	// Init state
-	pots_state = ON_HOOK;
-	pots_ring_state = RING_IDLE;
-	pots_dial_state = DIAL_IDLE;
-	pots_tone_state = TONE_IDLE;
-	pots_in_service = false;
-	pots_has_call_audio = false;
-	pots_do_not_disturb = false;
-	pots_ring_request = false;
-	pots_cur_off_hook = false;
-	pots_saw_hook_state_change = false;
-	pots_tone_timer_count = POTS_RCV_OFF_HOOK_MSEC / POTS_EVAL_MSEC;
-	pots_dial_last_dtmf_digit = ' ';
-	pots_notify_ext_digit_dialed = false;
-	
 	// Country code configures what tones and patterns we generate
 	country_code = ps_get_country_code();
+	if (country_code >= int_get_num_countries()) {
+		country_code = 0;
+		ps_set_country_code(country_code);
+	}
 	country_code_infoP = int_get_country_info(country_code);
 	ESP_LOGI(TAG, "Country: %s", country_code_infoP->name);
 		
@@ -222,6 +234,10 @@ void pots_task(void* args)
 	// Initialize our outgoing tone set (pre-allocate tone step info so we're
 	// not always needing to free and potentially fragment heap)
 	_potsInitTones(true);
+	
+	// Initialize our Caller ID data structure here so it will pre-allocate memory
+	// at the beginning of time
+	cid_tx_stateP = adsi_tx_init(NULL, _potsLocaleToCIDstandard());
 		
 	while (true) {
 		// Look for notifications from other tasks
@@ -239,6 +255,7 @@ void pots_task(void* args)
 		// Evaluate our output state
 		_potsEvalRinger();
 		pots_digit_dialed = _potsEvalDialer(hook_changed);
+		_potsEvalCID();
 		_potsEvalToneState(pots_digit_dialed, pots_notify_ext_digit_dialed);
 		
 		if (pots_digit_dialed) {
@@ -311,8 +328,26 @@ static void _potsHandleNotifications()
 		}
 		if (Notification(notification_value, POTS_NOTIFY_RING_MASK)) {
 			if (!pots_do_not_disturb) {
-				pots_ring_request = true;
+				if ((pots_ring_num == 0) &&
+				    (country_code_infoP->cid.cid_spec & INT_CID_TYPE_MASK) &&
+				    (country_code_infoP->cid.cid_spec & INT_CID_FLAG_BEFORE_RING)) {
+				    
+					// Generate Caller ID information instead of a ring if this is the first ring
+					// of a phone call and the country information requires CID before ring
+					pots_trigger_cid = true;
+#ifdef POTS_CID_DEBUG
+					ESP_LOGI(TAG, "Pre-ring CID trigger");
+#endif
+				} else {
+					// Start a ring
+					pots_trigger_pots_ring = true;
+				}
 			}
+		}
+		if (Notification(notification_value, POTS_NOTIFY_DONE_RINGING_MASK)) {
+			// Reset the ring count when app_task determines a call we haven't picked
+			// up is over
+			pots_ring_num = 0;
 		}
 		
 		//
@@ -460,6 +495,18 @@ static void _potsInitTones(bool init)
 }
 
 
+static void _potsLineReverse(bool en)
+{
+	gpio_set_level(PIN_FR, en ? 0 : 1);
+}
+
+
+static void _potsLineRingMode(bool en)
+{
+	gpio_set_level(PIN_RM, en ? 1 : 0);
+}
+
+
 // Updates current hook switch state
 //   returns true if the state changes, false otherwise
 static bool _potsEvalHook() {
@@ -550,15 +597,30 @@ static void _potsEvalRinger()
 	static pots_dial_stateT prev_pots_ring_state = RING_IDLE;
 #endif
 
-	// End ringing if phone just went off hook
-	if ((pots_state == OFF_HOOK) && (pots_ring_state != RING_IDLE)) {
-		_potsEndRing();
+	if (pots_state == OFF_HOOK) {
+		// Always reset ring count when we go off hook
+		pots_ring_num = 0;
+		
+		// End ringing if necessary
+		if (pots_ring_state != RING_IDLE) {
+			_potsEndRing();
+		}
 	}
 	
 	switch (pots_ring_state) {
 		case RING_IDLE:
-			if ((pots_state == ON_HOOK) && pots_ring_request) {
-				_potsStartRing();
+			if (pots_state == ON_HOOK) {
+				if (pots_trigger_pots_ring) {
+					pots_trigger_pots_ring = false;
+					_potsStartRing(false);
+				} else if (pots_trigger_cid_ring) {
+					pots_trigger_cid_ring = false;
+					_potsStartRing(true);
+				}
+			} else {
+				// Throw away any requests when we go off-hook
+				pots_trigger_pots_ring = false;
+				pots_trigger_cid_ring = false;
 			}
 			break;
 		
@@ -569,7 +631,7 @@ static void _potsEvalRinger()
 				// Ring pulse done
 				pots_ring_state = RING_PULSE_OFF;
 				pots_ring_pulse_count = _potsGetRingPulseCount(false);  // Off for half a pulse
-				gpio_set_level(PIN_FR, 1);
+				_potsLineReverse(false);
 			}
 			break;
 		
@@ -580,8 +642,8 @@ static void _potsEvalRinger()
 			// Either timer expiring ends this half of the pulse
 			if ((pots_ring_period_count <= 0) || (pots_ring_pulse_count <= 0)) {
 				if (pots_ring_period_count <= 0) {
-					// End of ring - check if there are more rings
-					if (++pots_ring_step == (pots_num_ring_steps-1)) {
+					// End of ring - check if there are more rings in this sequence
+					if (++pots_ring_step >= pots_num_ring_steps) {
 						_potsEndRing();
 					} else {
 						pots_ring_state = RING_STEP_WAIT;
@@ -591,24 +653,26 @@ static void _potsEvalRinger()
 					// Setup next ring pulse in this ring
 					pots_ring_state = RING_PULSE_ON;
 					pots_ring_pulse_count = _potsGetRingPulseCount(true);
-					gpio_set_level(PIN_FR, 0);
+					_potsLineReverse(true);
 				}
 			}
 			break;
 		
 		case RING_STEP_WAIT:
 			if (--pots_ring_period_count <= 0) {
-				// End of wait - start next ring
-				++pots_ring_step;
-				pots_ring_state = RING_PULSE_ON;
-				pots_ring_period_count = country_code_infoP->ring_info.cadence_pairs[pots_ring_step] / POTS_EVAL_MSEC;
-				pots_ring_pulse_count = _potsGetRingPulseCount(true);
+				// End of wait
+				if (++pots_ring_step >= pots_num_ring_steps) {
+					// No more rings
+					_potsEndRing();
+				} else {
+					// Next ring in sequence
+					pots_ring_state = RING_PULSE_ON;
+					pots_ring_period_count = country_code_infoP->ring_info.cadence_pairs[pots_ring_step] / POTS_EVAL_MSEC;
+					pots_ring_pulse_count = _potsGetRingPulseCount(true);
+				}
 			}
 			break;
-	}
-	
-	// Always clear notification flag after consumption
-	pots_ring_request = false;
+	}	
 	
 #ifdef POTS_RING_DEBUG
 	STATE_CHANGE_PRINT(prev_pots_ring_state, pots_ring_state, pots_ring_state_name);
@@ -617,23 +681,43 @@ static void _potsEvalRinger()
 }
 
 
-static void _potsStartRing()
-{
-	pots_num_ring_steps = country_code_infoP->ring_info.num_cadence_pairs * 2;
+static void _potsStartRing(bool is_rp_as)
+{	
+	if (is_rp_as) {
+		// Special CID Ring Alert (RP-AS) - See ETSI EN 300 659-1
+		pots_num_ring_steps = 1;
+		pots_ring_period_count = country_code_infoP->cid.rp_as_msec / POTS_EVAL_MSEC;
+	} else {
+		// Normal ring
+		pots_num_ring_steps = country_code_infoP->ring_info.num_cadence_pairs * 2;
+		pots_ring_period_count = country_code_infoP->ring_info.cadence_pairs[0] / POTS_EVAL_MSEC;
+	}
+	
+	pots_ring_pulse_count = _potsGetRingPulseCount(true);
 	pots_ring_step = 0;
 	pots_ring_state = RING_PULSE_ON;
-	pots_ring_period_count = country_code_infoP->ring_info.cadence_pairs[pots_ring_step] / POTS_EVAL_MSEC;
-	pots_ring_pulse_count = _potsGetRingPulseCount(true);
-	gpio_set_level(PIN_RM, 1);   // Cause the line to enter ring mode
-	gpio_set_level(PIN_FR, 0);   // Toggle the line (reverse) to start this pulse of the ring
+	_potsLineRingMode(true);   // Cause the line to enter ring mode
+	_potsLineReverse(true);    // Toggle the line (reverse) to start this pulse of the ring
 }
 
 
 static void _potsEndRing()
 {
 	pots_ring_state = RING_IDLE;
-	gpio_set_level(PIN_FR, 1);   // Make sure tip/ring are not reversed
-	gpio_set_level(PIN_RM, 0);   // Exit ring mode
+	pots_ring_num += 1;
+	_potsLineReverse(false);   // Make sure tip/ring are not reversed
+	_potsLineRingMode(false);  // Exit ring mode
+	
+	// Look to start caller ID after first ring if required
+	if ((pots_ring_num == 1) &&
+	    (country_code_infoP->cid.cid_spec & INT_CID_TYPE_MASK) &&
+	    ((country_code_infoP->cid.cid_spec & INT_CID_FLAG_BEFORE_RING) == 0)) {
+	    
+		pots_trigger_cid = true;
+#ifdef POTS_CID_DEBUG
+	ESP_LOGI(TAG, "Post-ring CID trigger");
+#endif
+	}
 }
 
 
@@ -655,6 +739,282 @@ static int _potsGetRingPulseCount(bool on_portion)
 		// We handle the case where the ON cycles weren't exactly right by compensating in the OFF portion
 		ring_pulse_period_msec = ring_pulse_period_msec - (ring_on_eval_counts * POTS_EVAL_MSEC);
 		return (ring_pulse_period_msec / POTS_EVAL_MSEC);
+	}
+}
+
+
+static void _potsEvalCID()
+{
+#ifdef POTS_CID_DEBUG
+	static pots_cid_stateT prev_pots_cid_state = CID_IDLE;
+#endif
+
+	if ((pots_cid_state != CID_IDLE) && (pots_state != ON_HOOK)) {
+		// Stop caller ID if the phone goes off hook
+		pots_cid_state = CID_IDLE;		
+		_potsLineReverse(false);
+	}
+
+	switch (pots_cid_state) {
+		case CID_IDLE:
+			if ((pots_state == ON_HOOK) && pots_trigger_cid) {
+				pots_trigger_cid = false;
+				
+				// Setup the spandsp library caller ID audio generator 
+				if (_potsSetupCID()) {				
+					// Determine how to start caller ID based on country information
+					if ((country_code_infoP->cid.cid_spec & INT_CID_FLAG_BEFORE_RING)) {
+						// Before first ring
+						if (country_code_infoP->cid.cid_spec & INT_CID_FLAG_EN_LR) {
+							// Reverse Line
+							_potsLineReverse(true);
+							
+							// Setup timer for wait before CID audio
+							pots_cid_wait_count = country_code_infoP->cid.pre_msec / POTS_EVAL_MSEC;
+							pots_cid_state = CID_PRE_MSG_WAIT;
+						} else if (country_code_infoP->cid.cid_spec & INT_CID_FLAG_EN_RP_AS) {
+							// Start short ring
+							pots_trigger_cid_ring = true;
+							pots_cid_state = CID_RP_AS;
+						} else {
+							// Start CID audio
+							_potsSetToneState(TONE_CID);
+							pots_cid_state = CID_MSG;
+						}
+					} else {
+						// Just start CID audio when after first ring
+						_potsSetToneState(TONE_CID);
+						pots_cid_state = CID_MSG;
+					}
+				} else {
+					// No message to send (e.g. blocked number and the selected standard
+					// has no way to indicate that).  Trigger subsequent ring if necessary
+					if ((country_code_infoP->cid.cid_spec & INT_CID_FLAG_BEFORE_RING)) {
+						pots_trigger_pots_ring = true;
+					}
+				}
+			}
+			break;
+			
+		case CID_RP_AS: // Generating RP-AS (ring) alert
+			// Wait for ring to complete
+			if (pots_ring_state == RING_IDLE) {
+				// Setup delay before CID audio
+				pots_cid_wait_count = country_code_infoP->cid.pre_msec / POTS_EVAL_MSEC;
+				pots_cid_state = CID_PRE_MSG_WAIT;
+			}
+			break;
+			
+		case CID_PRE_MSG_WAIT:  // Waiting to start CID audio
+			if (--pots_cid_wait_count <= 0) {
+				// Start CID audio
+				_potsSetToneState(TONE_CID);
+				pots_cid_state = CID_MSG;
+			}
+			break;
+			
+		case CID_MSG:  // Generating Caller ID message audio
+			// Wait for message to complete
+			if (pots_tone_state != TONE_CID) {
+				// Setup the post CID timeout
+				pots_cid_wait_count = country_code_infoP->cid.post_msec / POTS_EVAL_MSEC;
+				pots_cid_state = CID_POST_MSG_WAIT;
+			}
+			break;
+			
+		case CID_POST_MSG_WAIT:  // Waiting after Caller ID before allowing or enabling ring
+			// Can't start any subsequent ring until out of this state
+			if (--pots_cid_wait_count <= 0) {
+				if (country_code_infoP->cid.cid_spec & INT_CID_FLAG_EN_LR) {
+					// Set normal line polarity (for the case we reversed it)
+					_potsLineReverse(false);
+				}
+				
+				if ((country_code_infoP->cid.cid_spec & INT_CID_FLAG_BEFORE_RING)) {
+					// Start the first ring if CID was sent before first ring
+					pots_trigger_pots_ring = true;
+				}
+				
+				pots_cid_state = CID_IDLE;
+			}
+			break;
+	}
+
+#ifdef POTS_CID_DEBUG
+	STATE_CHANGE_PRINT(prev_pots_cid_state, pots_cid_state, pots_cid_state_name);
+	prev_pots_cid_state = pots_cid_state;
+#endif
+}
+
+
+static bool _potsSetupCID()
+{
+	bool valid_cid = true;
+	char cid_buf[33];
+	char time_buf[9];
+	int cid_buf_len;
+	int len = -1;
+	tmElements_t tm;
+	
+	// Setup the state based on current locale
+	(void) adsi_tx_init(cid_tx_stateP, _potsLocaleToCIDstandard());
+	
+	// Configure DT-AS if necessary
+	if ((country_code_infoP->cid.cid_spec & INT_CID_FLAG_EN_DT_AS)) {
+		adsi_tx_send_alert_tone(cid_tx_stateP);
+	}
+	
+	// Change the caller ID message pre-amble if necessary
+	if ((country_code_infoP->cid.cid_spec & INT_CID_FLAG_EN_SHORT_PRE)) {
+		adsi_tx_set_preamble(cid_tx_stateP, 100, 60, -1, -1);
+	}
+	// TODO??? - BellCore spec wants ~130 Mark bits after preamble but ADSI does 80 by default
+	// so maybe have to have special case to set preamble for BellCore
+	
+	// Get message strings
+	cid_buf_len = app_get_cid_number(cid_buf);
+	if (cid_buf_len == 0) {
+		sprintf(cid_buf, UNKNOWN_CID_STRING);
+		cid_buf_len = strlen(cid_buf);
+		valid_cid = false;
+	}
+	time_get(&tm);
+	time_get_cid_string(tm, time_buf);
+	ESP_LOGI(TAG, "CID Time: %s  Message: %s", time_buf, cid_buf);
+	
+	// Set the message
+	switch (country_code_infoP->cid.cid_spec & INT_CID_TYPE_MASK) {
+		case INT_CID_TYPE_ETSI_FSK:
+		case INT_CID_TYPE_SIN227:
+			// ETSI and SIN227 FSK MDMF format
+			len = adsi_add_field(cid_tx_stateP, adsi_msg_buf, len, CLIP_MDMF_CALLERID, NULL, 0);
+            len = adsi_add_field(cid_tx_stateP, adsi_msg_buf, len, CLIP_CALLTYPE, (uint8_t *) "\x81", 1);
+            len = adsi_add_field(cid_tx_stateP, adsi_msg_buf, len, CLIP_DATETIME, (uint8_t *) time_buf, 8);
+            if (valid_cid) {
+            	len = adsi_add_field(cid_tx_stateP, adsi_msg_buf, len, CLIP_CALLER_NUMBER, (uint8_t *) cid_buf, cid_buf_len);
+            } else {
+            	len = adsi_add_field(cid_tx_stateP, adsi_msg_buf, len, CLIP_ABSENCE1, (uint8_t *) "O", 1);
+            }
+			break;
+		
+		case INT_CID_TYPE_DTMF1:
+			// Format: A<caller's phone number>D<redirected number>B<special information>C
+			//   Special information codes are defined:
+			//    - "00" indicates the calling party number is not available.
+			//    - "10" indicates that the presentation of the calling party number is restricted.
+			len = adsi_add_field(cid_tx_stateP, adsi_msg_buf, len, CLIP_DTMF_C_TERMINATED, NULL, 0);
+			if (valid_cid) {
+				len = adsi_add_field(cid_tx_stateP, adsi_msg_buf, len, CLIP_DTMF_C_CALLER_NUMBER, (uint8_t *) cid_buf, cid_buf_len);
+			} else {
+				len = adsi_add_field(cid_tx_stateP, adsi_msg_buf, len, CLIP_DTMF_C_ABSENCE, (uint8_t *) "10", 2);
+			}
+			break;
+			
+		case INT_CID_TYPE_DTMF2:
+			// Format: A<caller's phone number>#
+			//  - D1#     Number not available because the caller has restricted it.
+			//  - D2#     Number not available because the call is international.
+			//  - D3#     Number not available due to technical reasons.
+			len = adsi_add_field(cid_tx_stateP, adsi_msg_buf, len, CLIP_DTMF_HASH_TERMINATED, NULL, 0);
+			if (valid_cid) {
+				len = adsi_add_field(cid_tx_stateP, adsi_msg_buf, len, CLIP_DTMF_HASH_CALLER_NUMBER, (uint8_t *) cid_buf, cid_buf_len);
+			} else {
+				len = adsi_add_field(cid_tx_stateP, adsi_msg_buf, len, CLIP_DTMF_HASH_ABSENCE, (uint8_t *) "1", 1);
+			}
+			break;
+		
+		case INT_CID_TYPE_DTMF3:
+			// Format: D<caller's phone number>C
+			if (valid_cid) {
+				len = adsi_add_field(cid_tx_stateP, adsi_msg_buf, len, CLIP_DTMF_C_TERMINATED, NULL, 0);
+				len = adsi_add_field(cid_tx_stateP, adsi_msg_buf, len, CLIP_DTMF_C_REDIRECT_NUMBER, (uint8_t *) cid_buf, cid_buf_len);
+			}
+			break;
+			
+		case INT_CID_TYPE_DTMF4:
+			// Format: <caller's phone number>#
+			if (valid_cid) {
+				len = adsi_add_field(cid_tx_stateP, adsi_msg_buf, len, CLIP_DTMF_HASH_TERMINATED, NULL, 0);
+            	len = adsi_add_field(cid_tx_stateP, adsi_msg_buf, len, CLIP_DTMF_HASH_UNSPECIFIED, (uint8_t *) cid_buf, cid_buf_len);
+			}
+			break;
+		
+		case INT_CID_TYPE_JCLIP:
+			// Japanese NTT FSK MDMF format (this isn't really right as it doesn't implement the multi-call functionality)
+			len = adsi_add_field(cid_tx_stateP, adsi_msg_buf, len, JCLIP_MDMF_CALLERID, NULL, 0);
+			if (valid_cid) {
+				len = adsi_add_field(cid_tx_stateP, adsi_msg_buf, len, JCLIP_DIALED_NUMBER, (uint8_t *) cid_buf, cid_buf_len);
+			} else {
+				len = adsi_add_field(cid_tx_stateP, adsi_msg_buf, len, JCLIP_ABSENCE, (uint8_t *) "O", 1);
+			}
+			break;
+		
+		case INT_CID_TYPE_ACLIP:
+			// Singapore FSK MDMF format
+			len = adsi_add_field(cid_tx_stateP, adsi_msg_buf, len, ACLIP_MDMF_CALLERID, NULL, 0);
+			len = adsi_add_field(cid_tx_stateP, adsi_msg_buf, len, ACLIP_DATETIME, (uint8_t *) time_buf, 8);
+			if (valid_cid) {
+				len = adsi_add_field(cid_tx_stateP, adsi_msg_buf, len, ACLIP_CALLER_NUMBER, (uint8_t *) cid_buf, cid_buf_len);
+			} else {
+				len = adsi_add_field(cid_tx_stateP, adsi_msg_buf, len, ACLIP_NUMBER_ABSENCE, (uint8_t *) "O", 1);
+			}
+			break;
+		
+		default:
+			if (valid_cid) {
+				// BellCore FSK SDMF Format when we have the number
+				len = adsi_add_field(cid_tx_stateP, adsi_msg_buf, len, CLASS_SDMF_CALLERID, NULL, 0);
+				len = adsi_add_field(cid_tx_stateP, adsi_msg_buf, len, 0, (uint8_t *) time_buf, 8);
+				len = adsi_add_field(cid_tx_stateP, adsi_msg_buf, len, 0, (uint8_t *) cid_buf, cid_buf_len);
+			} else {
+				// MDMF Format when we don't have a number to try to deliver the reason why
+				len = adsi_add_field(cid_tx_stateP, adsi_msg_buf, len, CLASS_MDMF_CALLERID, NULL, 0);
+            	len = adsi_add_field(cid_tx_stateP, adsi_msg_buf, len, MCLASS_DATETIME, (uint8_t *) time_buf, 8);
+            	len = adsi_add_field(cid_tx_stateP, adsi_msg_buf, len, MCLASS_ABSENCE1, (uint8_t *) "O", 1);
+			}
+	}
+	
+	if (len != -1) {
+		// Load the message
+		len = adsi_tx_put_message(cid_tx_stateP, adsi_msg_buf, len);
+		
+		return true;
+	} else {
+		// No message to send
+		return false;
+	}
+}
+
+
+static int _potsLocaleToCIDstandard()
+{
+	switch (country_code_infoP->cid.cid_spec & INT_CID_TYPE_MASK) {
+		case INT_CID_TYPE_BELLCORE_FSK:
+			return ADSI_STANDARD_CLASS;
+			break;
+			
+		case INT_CID_TYPE_ETSI_FSK:
+		case INT_CID_TYPE_SIN227:
+			return ADSI_STANDARD_CLIP;
+			break;
+		
+		case INT_CID_TYPE_DTMF1:
+		case INT_CID_TYPE_DTMF2:
+		case INT_CID_TYPE_DTMF3:
+		case INT_CID_TYPE_DTMF4:
+			return ADSI_STANDARD_CLIP_DTMF;
+			break;
+		
+		case INT_CID_TYPE_JCLIP:
+			return ADSI_STANDARD_JCLIP;
+			break;
+		
+		case INT_CID_TYPE_ACLIP:
+			return ADSI_STANDARD_JCLIP;
+			break;
+		
+		default:
+			return ADSI_STANDARD_NONE;
 	}
 }
 
@@ -775,7 +1135,7 @@ static void _potsEvalToneState(bool potsDigitDialed, bool appDigitDialed)
 				_potsSetToneState(TONE_VOICE);
 			} else {
 				// Remote side ended call but phone is off-hook so check if it's time to give the receiver off hook tone
-				if (--pots_tone_timer_count <= 0) {
+				if (_potsToneTimerExpired()) {
 					_potsSetToneState(TONE_OFF_HOOK);
 				}
 			}
@@ -794,7 +1154,7 @@ static void _potsEvalToneState(bool potsDigitDialed, bool appDigitDialed)
 				// Not sure this is entirely correct but we'll switch over to voice if they
 				// get a call while preparing to dial
 				_potsSetToneState(TONE_VOICE);
-			} else if (--pots_tone_timer_count <= 0) {
+			} else if (_potsToneTimerExpired()) {
 				_potsSetToneState(TONE_OFF_HOOK);
 			} else {
 				// Generate [endless] dial tone
@@ -810,7 +1170,7 @@ static void _potsEvalToneState(bool potsDigitDialed, bool appDigitDialed)
 			} else if ((pots_state == OFF_HOOK) && appDigitDialed) {
 				// Generate a DTMF tone for app generated digit
 				_potsSetToneState(TONE_DTMF);
-			} else if (--pots_tone_timer_count <= 0) {
+			} else if (_potsToneTimerExpired()) {
 				_potsSetToneState(TONE_OFF_HOOK);
 			}
 			break;
@@ -821,7 +1181,7 @@ static void _potsEvalToneState(bool potsDigitDialed, bool appDigitDialed)
 				_potsSetToneState(TONE_VOICE);
 			} else if (pots_state == ON_HOOK) {
 				_potsSetToneState(TONE_IDLE);
-			} else if (--pots_tone_timer_count <= 0) {
+			} else if (_potsToneTimerExpired()) {
 				_potsSetToneState(TONE_OFF_HOOK);
 			} else {
 				if (!_potsEvalToneGen()) {
@@ -837,7 +1197,7 @@ static void _potsEvalToneState(bool potsDigitDialed, bool appDigitDialed)
 		    if ((pots_state == OFF_HOOK) && appDigitDialed) {
 				// Generate a DTMF tone for app generated digit
 				_potsSetToneState(TONE_DTMF);
-			} else if (--pots_tone_timer_count <= 0) {
+			} else if (_potsToneTimerExpired()) {
 				_potsSetToneState(TONE_DIAL_QUIET);
 			}
 			break;
@@ -864,6 +1224,24 @@ static void _potsEvalToneState(bool potsDigitDialed, bool appDigitDialed)
 				(void) _potsEvalToneGen();
 			}
 			break;
+		
+		case TONE_CID:
+			if (pots_state == ON_HOOK) {
+				if (!_potsEvalToneGen()) {
+					// Done with Caller ID audio transmission
+					_potsSetToneState(TONE_CID_FLUSH);
+				}
+			} else {
+				// End CID if phone is picked up
+				_potsSetToneState(TONE_CID_FLUSH);
+			}
+			break;
+		
+		case TONE_CID_FLUSH:
+			if (_potsToneTimerExpired()) {
+				_potsSetToneState(TONE_IDLE);
+			}
+			break;
 	}
 	
 #ifdef POTS_STATE_DEBUG
@@ -885,7 +1263,14 @@ static bool _potsEvalToneGen()
 	
 	while ((cur_samples_in_tx <= POTS_TONE_BUF_LEN) && valid_data) {
 		// Get some audio
-		if (pots_tone_state == TONE_DTMF) {
+		if (pots_tone_state == TONE_CID) {
+			// See if there is CID audio (CID audio is only generated for a period of time)
+			samples_in_buf = adsi_tx(cid_tx_stateP, tone_tx_buf, POTS_TONE_BUF_LEN);
+			if (samples_in_buf == 0) {
+				// No more CID audio to generate
+				valid_data = false;
+			}
+		} else if (pots_tone_state == TONE_DTMF) {
 			// See if there is DTMF audio (a DTMF tone is only generated for a period of time)
 			samples_in_buf = dtmf_tx(&dtmf_tx_state, tone_tx_buf, POTS_TONE_BUF_LEN);
 			if (samples_in_buf == 0) {
@@ -893,7 +1278,7 @@ static bool _potsEvalToneGen()
 				valid_data = false;
 			}
 		} else {
-			// Tones never end (they are stopped when this routine isn't called)
+			// Status tones never end (they are stopped when this routine isn't called)
 			if (tone_tx_use_sample) {
 				while (samples_in_buf < POTS_TONE_BUF_LEN) {
 					tone_tx_buf[samples_in_buf++] = sample_tone_tx_cur_buf[sample_tone_tx_index++];
@@ -914,6 +1299,20 @@ static bool _potsEvalToneGen()
 	}
 		
 	return valid_data;
+}
+
+
+static bool _potsToneTimerExpired()
+{
+	if (pots_tone_timer_count != 0) {
+		if (--pots_tone_timer_count == 0) {
+			return true;
+		} else {
+			return false;
+		}
+	} else {
+		return false;
+	}
 }
 
 
@@ -946,7 +1345,7 @@ static void _potsSetAudioOutput(pots_tone_stateT s)
 			xTaskNotify(task_handle_audio, AUDIO_NOTIFY_DISABLE_MASK, eSetBits);
 			
 			// (Re)set off-hook too long detection timeout
-			pots_tone_timer_count = POTS_RCV_OFF_HOOK_MSEC / POTS_EVAL_MSEC;
+			pots_tone_timer_count = country_code_infoP->off_hook_timeout / POTS_EVAL_MSEC;;
 			break;
 		
 		case TONE_DIAL:
@@ -964,28 +1363,28 @@ static void _potsSetAudioOutput(pots_tone_stateT s)
 			(void) dtmf_tx_init(&dtmf_tx_state);
 			
 			// (Re)set off-hook too long detection timeout
-			pots_tone_timer_count = POTS_RCV_OFF_HOOK_MSEC / POTS_EVAL_MSEC;
+			pots_tone_timer_count = country_code_infoP->off_hook_timeout / POTS_EVAL_MSEC;;
 			break;
 		
 		case TONE_DIAL_QUIET:
 			// (Re)set off-hook too long detection timeout
-			pots_tone_timer_count = POTS_RCV_OFF_HOOK_MSEC / POTS_EVAL_MSEC;
+			pots_tone_timer_count = country_code_infoP->off_hook_timeout / POTS_EVAL_MSEC;;
 			break;
 		
 		case TONE_DTMF:
 			// Add the digit provided by the app to our list of DTMF tones to generate
-			dtmf_tx_put(&dtmf_tx_state, dtmf_tx_digit_buf);
+			dtmf_tx_put(&dtmf_tx_state, dtmf_tx_digit_buf, -1);
 			
 			// Notify audio_task to start processing tone
 			xTaskNotify(task_handle_audio, AUDIO_NOTIFY_EN_TONE_MASK, eSetBits);
 			
 			// (Re)set off-hook too long detection timeout
-			pots_tone_timer_count = POTS_RCV_OFF_HOOK_MSEC / POTS_EVAL_MSEC;
+			pots_tone_timer_count = country_code_infoP->off_hook_timeout / POTS_EVAL_MSEC;
 			break;
 		
 		case TONE_DTMF_FLUSH:
 			// Setup timer for flush period following a DTMF tone generation
-			pots_tone_timer_count = POTS_DTMF_FLUSH_MSEC / POTS_EVAL_MSEC;
+			pots_tone_timer_count = POTS_AUDIO_FLUSH_MSEC / POTS_EVAL_MSEC;
 			break;
 		
 		case TONE_NO_SERVICE:
@@ -1000,6 +1399,16 @@ static void _potsSetAudioOutput(pots_tone_stateT s)
 			
 			// Notify audio_task to start processing tone
 			xTaskNotify(task_handle_audio, AUDIO_NOTIFY_EN_TONE_MASK, eSetBits);
+			break;
+		
+		case TONE_CID:
+			// Notify audio_task to start processing message
+			xTaskNotify(task_handle_audio, AUDIO_NOTIFY_EN_TONE_MASK, eSetBits);
+			break;
+		
+		case TONE_CID_FLUSH:
+			// Setup timer for flush period following a CID audio generation
+			pots_tone_timer_count = POTS_AUDIO_FLUSH_MSEC / POTS_EVAL_MSEC;
 			break;
 	}
 }
@@ -1054,7 +1463,6 @@ static void _potsDtmfCallback(void *data, const char *digits, int len)
 		return;
 	}
 	
-	// We ignore special characters 'A' - 'D'
 	if (len > 1) {
 		ESP_LOGE(TAG, "Saw too many DTMF keys - %d", len);
 	}

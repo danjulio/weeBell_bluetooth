@@ -72,7 +72,9 @@ static bool bt_in_service = false;                  // BT has SLC (service level
 static bool bt_in_call = false;                     // BT sees call has been established (successfully initiated or answered)
 static bool bt_audio_connected = false;             // BT sending us audio
 static bool pots_off_hook = false;
+static bool cid_valid = false;                      // Set true when we get Caller ID info from bluetooth
 static int call_received_timer = 0;                 // Timer to detect ringing has ended for incoming/unanswered calls
+static int ring_count = 0;                          // Number of rings
 static float new_mic_gain;                          // New gain set by bt_task from remote device
 static float new_spk_gain;
 
@@ -87,8 +89,11 @@ static char new_pots_digit;
 static char dialing_num[APP_MAX_DIALED_DIGITS+1];   // Statically allocated phone number dialing buffer
 static int dialing_num_valid = 0;                   // Number of valid entries - also points to next location to load
 static int dialing_pots_digit_timer = 0;            // Counts up evaluation cycles after each POTs digit dialed to initiate a call
-static bool dialing_num_from_cid = false;           // Set when dialing_num set by incoming call
 static SemaphoreHandle_t dialing_num_mutex;
+
+// Caller ID
+static char cid_num[ESP_BT_HF_NUMBER_LEN+1];
+static SemaphoreHandle_t cid_num_mutex;
 
 #if (CONFIG_AUDIO_SAMPLE_ENABLE == true)
 // Support for audio sample recording
@@ -105,6 +110,8 @@ static void _appPushNewDialedDigit(char c);
 static void _appEvalState();
 static void _appSetState(app_state_t st);
 static bool _appCanInitiateAssistantCall();
+static void _appInvalidateDialingNum();
+static void _appInvalidateCID();
 
 
 //
@@ -116,8 +123,9 @@ void app_task()
 	
 	ESP_LOGI(TAG, "Start task");
 	
-	// Phone number access semaphore
+	// Phone number access semaphores
 	dialing_num_mutex = xSemaphoreCreateMutex();
+	cid_num_mutex = xSemaphoreCreateMutex();
 	
 #if (CONFIG_AUDIO_SAMPLE_ENABLE == true)
 	sample_mem_init();
@@ -130,13 +138,13 @@ void app_task()
 		// Evaluate state updates
 		_appEvalState();
 		
-		// Notify gcore_task of activity once/sec while we're busy with a call
+		// Notify gcore_task of activity twice/sec while we're busy with a call
 		if ((app_state == DISCONNECTED) || (app_state == CONNECTED_IDLE)) {
 			// Hold counter in reset
 			activity_counter = 0;
 		} else {
 			// Look for timeout for activity notification
-			if (++activity_counter > (1000 / APP_EVAL_MSEC)) {
+			if (++activity_counter > (500 / APP_EVAL_MSEC)) {
 				activity_counter = 0;
 				xTaskNotify(task_handle_gcore, GCORE_NOTIFY_ACTIVITY_MASK, eSetBits);
 			}
@@ -176,13 +184,27 @@ void app_set_pots_digit(char c)
 
 void app_set_cid_number(const char* pn)
 {
-	strncpy(dialing_num, pn, ESP_BT_HF_NUMBER_LEN);
-	dialing_num[ESP_BT_HF_NUMBER_LEN] = 0;
-	dialing_num_valid = strlen(dialing_num);
+	xSemaphoreTake(cid_num_mutex, portMAX_DELAY);
+	strncpy(cid_num, pn, ESP_BT_HF_NUMBER_LEN);
+	cid_num[ESP_BT_HF_NUMBER_LEN] = 0;
+	xSemaphoreGive(cid_num_mutex);
+	
+	cid_valid = true;
 }
 
 
-int app_get_cur_number(char* pn, bool* is_dialed)
+// pn must have ESP_BT_HF_NUMBER_LEN + 1 characters
+int app_get_cid_number(char* pn)
+{
+	xSemaphoreTake(cid_num_mutex, portMAX_DELAY);
+	strncpy(pn, cid_num, ESP_BT_HF_NUMBER_LEN);
+	pn[ESP_BT_HF_NUMBER_LEN] = 0;
+	xSemaphoreGive(cid_num_mutex);
+	return strlen(pn);
+}
+
+
+int app_get_dial_number(char* pn)
 {
 	int n;
 	
@@ -192,7 +214,6 @@ int app_get_cur_number(char* pn, bool* is_dialed)
 		// Copy characters including the final null terminator
 		*(pn+i) = dialing_num[i];
 	}
-	*is_dialed = !dialing_num_from_cid;
 	xSemaphoreGive(dialing_num_mutex);
 	
 	return n;
@@ -291,6 +312,7 @@ static void _appHandleNotifications()
 		
 		if (Notification(notification_value, APP_NOTIFY_BT_RING_MASK)) {
 			notify_bt_ring_indication = true;
+			ring_count += 1;
 		}
 		
 		if (Notification(notification_value, APP_NOTIFY_BT_CALL_STARTED_MASK)) {
@@ -302,8 +324,7 @@ static void _appHandleNotifications()
 		}
 		
 		if (Notification(notification_value, APP_NOTIFY_BT_CID_AVAILABLE_MASK)) {
-			dialing_num_from_cid = true;
-			xTaskNotify(task_handle_gui, GUI_NOTIFY_PH_NUM_UPDATE_MASK, eSetBits);
+			xTaskNotify(task_handle_gui, GUI_NOTIFY_CID_NUM_UPDATE_MASK, eSetBits);
 		}
 		
 		if (Notification(notification_value, APP_NOTIFY_BT_AUDIO_START_MASK)) {
@@ -381,9 +402,7 @@ static void _appHandleNotifications()
 
 static void _appPushNewDialedDigit(char c)
 {
-	if ((app_state == DIALING) ||
-	    (!dialing_num_from_cid && ((app_state == CALL_ACTIVE) || (app_state == CALL_ACTIVE_VOICE)))
-	   ) {
+	if ((app_state == DIALING) || (app_state == CALL_ACTIVE) || (app_state == CALL_ACTIVE_VOICE)) {
 		if (dialing_num_valid < APP_MAX_DIALED_DIGITS) {
 			// Add digit to phone number
 			xSemaphoreTake(dialing_num_mutex, portMAX_DELAY);
@@ -423,7 +442,12 @@ static void _appEvalState()
 			} else if (notify_bt_ring_indication) {
 				_appSetState(CALL_RECEIVED);
 			} else if (pots_off_hook) {
-				_appSetState(DIALING);
+				if (bt_audio_connected) {
+					// Picking up when cellphone has routed audio to us takes priority over dialing
+					_appSetState(CALL_ACTIVE_VOICE);
+				} else {
+					_appSetState(DIALING);
+				}
 			}
 			break;
 		
@@ -450,9 +474,17 @@ static void _appEvalState()
 				// call ended with no action; we detect this when we haven't received
 				// any rings in a while
 				_appSetState(CONNECTED_IDLE);
-			} else if (notify_dial_btn_pressed) {
-				// Tell cellphone to end call if user presses hangup from the GUI
-				xTaskNotify(task_handle_bt, BT_NOTIFY_HANGUP_CALL_MASK, eSetBits);
+				
+				// Special notification to pots_task that all rings associated with a call are done
+				xTaskNotify(task_handle_pots, POTS_NOTIFY_DONE_RINGING_MASK, eSetBits);
+			}
+			
+			// Handle the special case where by the 2nd ring we didn't get any Caller ID
+			// info probably indicating the number was blocked.  Let the GUI know here since
+			// it won't have been updated by received CID info so it will see an empty
+			// caller ID string and display something appropriate.
+			if (!cid_valid && (ring_count == 2)) {
+				xTaskNotify(task_handle_gui, GUI_NOTIFY_CID_NUM_UPDATE_MASK, eSetBits);
 			}
 			break;
 			
@@ -535,12 +567,14 @@ static void _appEvalState()
 				// Either the user ended the call from the GUI or our phone hung up the call
 				// so tell cellphone to end call
 				_appSetState(CALL_WAIT_END);
-			} else if (!bt_in_call) {
-				// Cellphone ended the call so wait for phone to hang up
-				_appSetState(CALL_WAIT_ONHOOK);
 			} else if (!bt_audio_connected) {
-				// We no longer have bluetooth audio (the cellphone changed the audio destination)
-				_appSetState(CALL_ACTIVE);
+				if (!bt_in_call) {
+					// Cellphone ended the call so wait for phone to hang up
+					_appSetState(CALL_WAIT_ONHOOK);
+				} else {
+					// We no longer have bluetooth audio (the cellphone changed the audio destination)
+					_appSetState(CALL_ACTIVE);
+				}
 			}
 			break;
 		
@@ -581,9 +615,13 @@ static void _appSetState(app_state_t st)
 		case CONNECTED_IDLE:
 			xTaskNotify(task_handle_pots, POTS_NOTIFY_IN_SERVICE_MASK, eSetBits);
 			
+			// Reset state
+			_appInvalidateCID();
+			cid_valid = false;
+			ring_count = 0;
+			
 			// Reset number indication on GUI
-			dialing_num_valid = 0;
-			dialing_num_from_cid = false;
+			_appInvalidateDialingNum();
 			xTaskNotify(task_handle_gui, GUI_NOTIFY_PH_NUM_UPDATE_MASK, eSetBits);
 			break;
 		
@@ -600,7 +638,6 @@ static void _appSetState(app_state_t st)
 			
 		case DIALING:
 			// Setup to start dialing
-			dialing_num_from_cid = false;
 			dialing_pots_digit_timer = 0;
 			break;
 		
@@ -640,4 +677,17 @@ static void _appSetState(app_state_t st)
 static bool _appCanInitiateAssistantCall()
 {
 	return ((dialing_num_valid == 1) && (dialing_num[0] == '0'));
+}
+
+
+static void _appInvalidateDialingNum()
+{
+	dialing_num_valid = 0;
+}
+
+
+static void _appInvalidateCID()
+{
+	// Create empty string
+	cid_num[0] = 0;
 }

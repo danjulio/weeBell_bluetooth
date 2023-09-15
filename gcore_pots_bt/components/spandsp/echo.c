@@ -110,6 +110,7 @@
 #include <string.h>
 #include <inttypes.h>
 
+#include "telephony.h"
 #include "bit_operations.h"
 #include "echo.h"
 
