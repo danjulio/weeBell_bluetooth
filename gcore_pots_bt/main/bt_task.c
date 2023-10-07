@@ -545,10 +545,14 @@ void _bt_hf_client_cb(esp_hf_client_cb_event_t event, esp_hf_client_cb_param_t *
             ESP_LOGI(HF_TAG, "--volume_target: %s, volume %d",
                     c_volume_control_target_str[param->volume_control.type],
                     param->volume_control.volume);
-            if (param->volume_control.type == ESP_HF_VOLUME_CONTROL_TARGET_MIC) {
+                    
+            // Only update our volume when we're already in a call.  We want our volume
+            // settings to override those the phone might tell us (from its own settings)
+            // before it opens an audio connection to us.
+            if ((param->volume_control.type == ESP_HF_VOLUME_CONTROL_TARGET_MIC) && bt_audio_connected) {
             	app_set_new_mic_gain(gainBT2DB(GAIN_TYPE_MIC, param->volume_control.volume));
             	xTaskNotify(task_handle_app, APP_NOTIFY_NEW_BT_MIC_GAIN_MASK, eSetBits);
-            } else if (param->volume_control.type == ESP_HF_VOLUME_CONTROL_TARGET_SPK) {
+            } else if ((param->volume_control.type == ESP_HF_VOLUME_CONTROL_TARGET_SPK) && bt_audio_connected) {
             	app_set_new_spk_gain(gainBT2DB(GAIN_TYPE_SPK, param->volume_control.volume));
             	xTaskNotify(task_handle_app, APP_NOTIFY_NEW_BT_SPK_GAIN_MASK, eSetBits);
             }
@@ -768,7 +772,7 @@ static bool _btStartBluetooth()
 	cod.minor = 0x02;     // binary 000010 (Handsfree device)
 	cod.major = 0x04;     // binary 00100 (Audio/Video)
 	cod.reserved_8 = 0;
-	cod.service = 0x100;  // binary 00100000000 (Audio)
+	cod.service = 0x300;  // binary 01100000000 (Audio + Telephony)
     if ((ret = esp_bt_gap_set_cod(cod, ESP_BT_INIT_COD)) != ESP_OK) {
     	ESP_LOGE(TAG, "configure COD failed (%s)", esp_err_to_name(ret));
         return false;

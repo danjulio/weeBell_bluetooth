@@ -411,7 +411,7 @@ static void _get_country_list()
 {
 	int i;
 	int n;
-	int sum;
+	size_t sum;
 	const country_info_t* ci;
 	
 	if (country_list != NULL) {

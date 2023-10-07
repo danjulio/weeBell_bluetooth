@@ -197,7 +197,7 @@ void app_set_cid_number(const char* pn)
 int app_get_cid_number(char* pn)
 {
 	xSemaphoreTake(cid_num_mutex, portMAX_DELAY);
-	strncpy(pn, cid_num, ESP_BT_HF_NUMBER_LEN);
+	strncpy(pn, cid_num, ESP_BT_HF_NUMBER_LEN+1);
 	pn[ESP_BT_HF_NUMBER_LEN] = 0;
 	xSemaphoreGive(cid_num_mutex);
 	return strlen(pn);
@@ -386,6 +386,23 @@ static void _appHandleNotifications()
 			xTaskNotify(task_handle_gui, GUI_NOTIFY_UPDATE_SPK_GAIN_MASK, eSetBits);
 		}
 		
+		if (Notification(notification_value, APP_NOTIFY_POTS_MAX_SPK_GAIN_MASK)) {
+			// Set the maximum value
+			if (!gainSetCodec(GAIN_TYPE_SPK, GAIN_APP_SPK_MAX_DB)) {
+				ESP_LOGE(TAG, "Set max codec speaker gain failed");
+			}
+		}
+		
+		if (Notification(notification_value, APP_NOTIFY_POTS_NORM_SPK_GAIN_MASK)) {
+			// Get operating gain from PS
+			new_spk_gain = ps_get_gain(PS_GAIN_SPK);
+			
+			// Update the codec value
+			if (!gainSetCodec(GAIN_TYPE_SPK, new_spk_gain)) {
+				ESP_LOGE(TAG, "Restore codec speaker gain failed");
+			}
+		}
+		
 #if (CONFIG_AUDIO_SAMPLE_ENABLE == true)
 		if (Notification(notification_value, APP_NOTIFY_START_AUDIO_SMPL_MASK)) {
 			if (sample_start()) {
@@ -511,6 +528,9 @@ static void _appEvalState()
 			} else if (notify_bt_ring_indication) {
 				// Someone calling us while we're dialing takes precedence
 				_appSetState(CALL_RECEIVED);
+			} else if (bt_audio_connected) {
+				// Cellphone routed audio to us
+				_appSetState(CALL_ACTIVE_VOICE);
 			} else if (dialing_num_valid > 0) {
 				// Increment the dial timer
 				dialing_pots_digit_timer += 1;
@@ -581,6 +601,9 @@ static void _appEvalState()
 		case CALL_WAIT_END:  // Waiting for bluetooth to indicate call has ended
 			if (!bt_in_service) {
 				_appSetState(DISCONNECTED);
+			} else if (bt_audio_connected && pots_off_hook) {
+					// Back to having some sort of a call
+					_appSetState(CALL_ACTIVE_VOICE);
 			} else if (!bt_in_call) {
 				if (pots_off_hook) {
 					_appSetState(CALL_WAIT_ONHOOK);

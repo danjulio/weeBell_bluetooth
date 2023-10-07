@@ -47,6 +47,13 @@
 // Local constants
 //
 
+// Uncomment for buffer analysis 
+//#define AUDIO_PRINT_BUF_INFO
+
+// Uncomment for OSLEC evaluation time debug
+//#define AUDIO_PRINT_OSLEC_TIME
+
+
 // SAMPLE RATE
 #define AUDIO_SAMPLE_RATE 8000
 
@@ -54,22 +61,27 @@
 // cause the hybrid to operate in a non-linear fashion from http://www.rowetel.com/?p=33)
 //#define ENABLE_ECHO_TX_HPF
 
-// Number of samples in our circular buffers
-#define BUF_SAMPLES 960
-
 // Number of samples to read/write to the I2S subsystem at a time (bytes = 4x)
-//   This should be a multiple of the FreeRTOS schedule increment
+//   Multiple is in mSec.  This should be the FreeRTOS scheduler period
 #define I2S_SAMPLES (10 * AUDIO_SAMPLE_RATE / 1000)
 
+// Number of samples in our circular buffers
+//   Optimized to be a set of samples or two larger than the most entries used during operation
+//   as measured with AUDIO_PRINT_BUF_INFO defined
+#define BUF_SAMPLES (8 * I2S_SAMPLES)
+
 // Number of samples for the LEC
-//   This should be big enough to hold both the line delay and a full I2S_SAMPLE delay
-#define LEC_SAMPLES (16 * AUDIO_SAMPLE_RATE / 1000)
+//   Multiple is in mSec.  This should be big enough to hold both the line/I2S subsystem
+//   delay and a full I2S_SAMPLE delay but not so big as to make OSLEC execution time too long
+#define LEC_SAMPLES (32 * AUDIO_SAMPLE_RATE / 1000)
 
 // Number of TX sample buffers to store to align TX/RX for LEC_SAMPLES
-//   One would think that this should be 2*I2S_SAMPLES but testing shows the timing of the priming
-//   requires 3*I2S_SAMPLES.
-#define TX_ALIGN_BUFFERS  3
-#define TX_ALIGN_BUF_SIZE ((TX_ALIGN_BUFFERS+1)*I2S_SAMPLES)
+//   Must be larger than the latency between TX and RX
+#define TX_ALIGN_SAMPLES (4 * I2S_SAMPLES)
+
+// Maximum amount of data to read from the I2S driver to prevent it from overflowing
+// by reading more than one full I2S_SAMPLES if available.
+#define MAX_READ_NUM_SAMPLES 3 
 
 
 
@@ -81,6 +93,7 @@ static const char* TAG = "audio_task";
 
 // State
 static bool audio_enabled = false;
+static bool audio_restart = false;       // Set when re-enabling audio while it's already going
 static bool audio_mux_to_tone = false;   // True to enable tone API, false to enable Voice API
 static bool audio_mute_mic = false;
 
@@ -98,14 +111,22 @@ static int tx_buf_pop;
 static int tx_buf_count;
 static SemaphoreHandle_t tx_buf_mutex;
 
-// I2S buffers (2 entries per sample for both channels)
-static int16_t i2s_rx_buf[2*I2S_SAMPLES];
+// I2S buffers (2 entries per sample for both L+R channels)
+static int16_t i2s_rx_buf[MAX_READ_NUM_SAMPLES*2*I2S_SAMPLES];
 static int16_t i2s_tx_buf[2*I2S_SAMPLES];
 
 // TX alignment circular queue (for echo cancellation)
-static int16_t i2s_tx_align_buf[TX_ALIGN_BUF_SIZE];
+static int16_t i2s_tx_align_buf[TX_ALIGN_SAMPLES];
 static int i2s_tx_buf_push;
 static int i2s_tx_buf_pop;
+static int i2s_tx_buf_count;
+
+#ifdef AUDIO_PRINT_BUF_INFO
+// Maximum counts
+static int rx_buf_max_count;
+static int tx_buf_max_count;
+static int i2s_tx_buf_max_count;
+#endif
 
 // DC restore state
 static dc_restore_state_t dc_restore_state;
@@ -118,7 +139,7 @@ static QueueHandle_t i2s_event_queue;
 
 // Sampling rate conversion
 static bool ext_sr_16k = false;               // Sampling rate of data in the audio circular buffers
-static uint16_t resample_buf[2*I2S_SAMPLES];  // Used by _audioGetTx/_audioPutRx when resampling data to minimize time lock held
+static uint16_t resample_buf[MAX_READ_NUM_SAMPLES*2*I2S_SAMPLES];  // Used by _audioGetTx/_audioPutRx when resampling data to minimize time lock held
 static int16_t us_taps[6];                    // FIFO of samples used in upscaling filter
 static const int32_t coef_a = 38400;
 static const int32_t coef_b = -6400;
@@ -142,6 +163,9 @@ static void _audioPushTxAlign(int len, int16_t* txP);
 static int16_t _audioGetTxAlign();
 static __inline__ int16_t _audioDsFilter(int16_t s1, int16_t s2);
 static __inline__ int16_t _audioUsFilter(int16_t i3, int16_t* i);
+#ifdef AUDIO_PRINT_BUF_INFO
+static void _audioPrintBufInfo();
+#endif
 
 //
 // API
@@ -153,6 +177,11 @@ void audio_task(void* args)
 	size_t bytes_written;
 	size_t bytes_read;
 	i2s_event_t i2s_evt;
+#ifdef AUDIO_PRINT_OSLEC_TIME
+	int64_t oslec_start_usec;
+	int64_t oslec_exec_usec;
+	int64_t oslec_max_exec_usec = 0;
+#endif
 	
 	
 	ESP_LOGI(TAG, "Start task");
@@ -160,6 +189,7 @@ void audio_task(void* args)
 	// Create circular buffer access mutex
 	rx_buf_mutex = xSemaphoreCreateMutex();
 	tx_buf_mutex = xSemaphoreCreateMutex();
+	_audioInitBuffers();
 	
 	// configure i2s
 	_audioInitI2S();
@@ -182,32 +212,31 @@ void audio_task(void* args)
     		// Do nothing but wait to be enabled
     		_audioHandleNotifications();
     		vTaskDelay(pdMS_TO_TICKS(10));
-    	} else {
-    		// Reset the echo canceller
-    		echo_can_flush(echo_can_state);
-    		
+    	} else {    	
     		// Start the codec
     		(void) audio_hal_ctrl_codec(AUDIO_HAL_CODEC_MODE_BOTH, AUDIO_HAL_CTRL_START);
     		
-			// Prime TX by loading both DMA buffers
-			_audioInitBuffers();
-			_audioInitTxAlign();
+			// Prime TX
 			_audioGetTx(I2S_SAMPLES, i2s_tx_buf);
 			(void) i2s_start(I2S_NUM_0);
 			(void) i2s_write(I2S_NUM_0, (void*) i2s_tx_buf, I2S_SAMPLES * 4, &bytes_written, portMAX_DELAY);
-			(void) i2s_write(I2S_NUM_0, (void*) i2s_tx_buf, I2S_SAMPLES * 4, &bytes_written, portMAX_DELAY);
-	
-			// Preset the alignment buffer push index to account for the TX priming
-			i2s_tx_buf_push = TX_ALIGN_BUFFERS*I2S_SAMPLES;
+			_audioPushTxAlign(I2S_SAMPLES, i2s_tx_buf);
     	
-		   	while (audio_enabled) {
-		   		while (xQueueReceive(i2s_event_queue, &i2s_evt, 0) && audio_enabled) {
+		   	while (audio_enabled && !audio_restart) {
+		   		while (xQueueReceive(i2s_event_queue, &i2s_evt, 0) && audio_enabled && !audio_restart) {
 					if (i2s_evt.type == I2S_EVENT_TX_DONE) {
 				    	_audioGetTx(I2S_SAMPLES, i2s_tx_buf);
 				    	(void) i2s_write(I2S_NUM_0, (void*) i2s_tx_buf, I2S_SAMPLES * 4, &bytes_written, portMAX_DELAY);
 			    		_audioPushTxAlign(I2S_SAMPLES, i2s_tx_buf);
 			    	} else if (i2s_evt.type == I2S_EVENT_RX_DONE) {
-				    	(void) i2s_read(I2S_NUM_0, (void*) i2s_rx_buf, I2S_SAMPLES * 4, &bytes_read, portMAX_DELAY);
+						// Set timeout to 0 to get whatever is available without blocking.
+						// Read up to MAX_READ_NUM_SAMPLES complete sets of samples to try to prevent driver overflows.
+				    	(void) i2s_read(I2S_NUM_0, (void*) i2s_rx_buf, MAX_READ_NUM_SAMPLES * I2S_SAMPLES * 4, &bytes_read, 0);
+#ifdef AUDIO_PRINT_BUF_INFO
+						if (bytes_read/4 > I2S_SAMPLES) {
+							ESP_LOGW(TAG, "RX %d samples", bytes_read/4);
+						}
+#endif
 				
 						// Process audio - only worry about channel 1
 						if (audio_mux_to_tone) {
@@ -217,6 +246,9 @@ void audio_task(void* args)
 							}
 						} else {
 							// Echo cancellation for voice
+#ifdef AUDIO_PRINT_OSLEC_TIME
+							oslec_start_usec = esp_timer_get_time();
+#endif
 					    	for (i=0; i<(bytes_read/2); i+=2) {
 					    		rx = i2s_rx_buf[i] * -1;  // AG1171 echoed output is inverted so we invert it again
 					    		tx = _audioGetTxAlign();
@@ -225,6 +257,10 @@ void audio_task(void* args)
 					    		sample_record(tx, rx, i2s_rx_buf[i]);
 #endif
 					    	}
+#ifdef AUDIO_PRINT_OSLEC_TIME
+							oslec_exec_usec = esp_timer_get_time() - oslec_start_usec;
+							if (oslec_exec_usec > oslec_max_exec_usec) oslec_max_exec_usec = oslec_exec_usec;
+#endif
 				    	}
 				    	
 				    	// Store rx data (number of samples = 1/4 bytes read)
@@ -239,12 +275,25 @@ void audio_task(void* args)
 			    	
 			    	_audioHandleNotifications();
 		   		}
-				
-				vTaskDelay(pdMS_TO_TICKS(5));
 			}
 			
 			(void) i2s_stop(I2S_NUM_0);
 			(void) audio_hal_ctrl_codec(AUDIO_HAL_CODEC_MODE_BOTH, AUDIO_HAL_CTRL_STOP);
+			
+			audio_restart = false; // In case it's the reason we are here
+			
+#ifdef AUDIO_PRINT_OSLEC_TIME
+			if (!audio_mux_to_tone) {
+				ESP_LOGI(TAG, "OSLEC max = %d mSec", (int32_t) (oslec_max_exec_usec/1000));
+				oslec_max_exec_usec = 0;
+			}
+#endif
+#ifdef AUDIO_PRINT_BUF_INFO
+			_audioPrintBufInfo();
+#endif
+				
+			// Reset the buffers
+			_audioInitBuffers();
 		}
 	}
 }
@@ -280,7 +329,7 @@ int audioGetToneRx(int16_t* buf, int len)
 		return _audioGetRx(buf, len);
 	} else {
 		for (int i=0; i<len; i++) buf[i] = 0;
-		return 0;
+		return len;
 	}
 }
 
@@ -295,11 +344,11 @@ void audioPutToneTx(int16_t* buf, int len)
 
 int audioGetVoiceRx(int16_t* buf, int len)
 {
-	if (audio_enabled && !audio_mux_to_tone && !audio_mute_mic) {
+	if (audio_enabled && !audio_mux_to_tone) {
 		return _audioGetRx(buf, len);
 	} else {
 		for (int i=0; i<len; i++) buf[i] = 0;
-		return 0;
+		return len;
 	}
 }
 
@@ -325,7 +374,7 @@ static void _audioInitI2S()
         .communication_format = I2S_COMM_FORMAT_STAND_I2S,
         .intr_alloc_flags = ESP_INTR_FLAG_LEVEL2 | ESP_INTR_FLAG_IRAM,
 		.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
-        .dma_buf_count = 2,
+        .dma_buf_count = 3,  // Three buffers to help prevent driver underflow/overflow conditions
         .dma_buf_len = I2S_SAMPLES,
         .use_apll = 1,
         .tx_desc_auto_clear = 1,
@@ -371,22 +420,43 @@ static bool _audioInitCodec()
 
 static void _audioInitBuffers()
 {
+	xSemaphoreTake(rx_buf_mutex, portMAX_DELAY);
 	rx_buf_put = 0;
 	rx_buf_pop = 0;
 	rx_buf_count = 0;
+	xSemaphoreGive(rx_buf_mutex);
+	
+	xSemaphoreTake(tx_buf_mutex, portMAX_DELAY);
 	tx_buf_put = 0;
 	tx_buf_pop = 0;
 	tx_buf_count = 0;
+	xSemaphoreGive(tx_buf_mutex);
+	
+#ifdef AUDIO_PRINT_BUF_INFO
+	rx_buf_max_count = 0;
+	tx_buf_max_count = 0;
+#endif
 }
 
 
 static void _audioInitTxAlign()
 {
-	for (int i=0; i<TX_ALIGN_BUF_SIZE; i++) {
+	for (int i=0; i<TX_ALIGN_SAMPLES; i++) {
 		i2s_tx_align_buf[i] = 0;
 	}
-	i2s_tx_buf_push = 0;
+	
+	// There is latency between loading a TX sample into the I2S driver and the echoed version
+	// returning through the RX path which OSLEC must deal with.  We try to reduce it some by
+	// presetting the alignment buffer push index slightly ahead.  This must never be so much
+	// that the TX data through the alignment buffer arrives after the echoed RX data.
+	// Must be less than buffer size.
+	i2s_tx_buf_push = 3 * I2S_SAMPLES;
 	i2s_tx_buf_pop = 0;
+	i2s_tx_buf_count = 0;
+	
+#ifdef AUDIO_PRINT_BUF_INFO
+	i2s_tx_buf_max_count = 0;
+#endif
 }
 
 
@@ -397,35 +467,60 @@ static void _audioHandleNotifications()
 	// Handle notifications (clear them upon reading)
 	if (xTaskNotifyWait(0x00, 0xFFFFFFFF, &notification_value, 0)) {
 		if (Notification(notification_value, AUDIO_NOTIFY_DISABLE_MASK)) {
-			ESP_LOGI(TAG, "Disable stream");
-			audio_enabled = false;
+			if (audio_enabled != false) {
+				ESP_LOGI(TAG, "Disable stream");
+				audio_enabled = false;
+			}
 		}
 		
 		if (Notification(notification_value, AUDIO_NOTIFY_EN_TONE_MASK)) {
-			ESP_LOGI(TAG, "Enable Tone stream (8k)");
-			audio_enabled = true;
-			audio_mux_to_tone = true;
-			ext_sr_16k = false;           // Tones always 8k
-			
-			// Initialize zero DC restoration machine
-			dc_restore_init(&dc_restore_state);
+			if (!((audio_enabled == true) && (audio_mux_to_tone == true) && (ext_sr_16k == false))) {
+				ESP_LOGI(TAG, "Enable Tone stream (8k)");
+				if (audio_enabled) {
+					audio_restart = true;
+				}
+				audio_enabled = true;
+				audio_mux_to_tone = true;
+				ext_sr_16k = false;           // Tones always 8k
+				
+				// Initialize zero DC restoration machine
+				dc_restore_init(&dc_restore_state);
+			}
 		}
 		
 		if (Notification(notification_value, AUDIO_NOTIFY_EN_VOICE_8_MASK)) {
-			ESP_LOGI(TAG, "Enable Voice stream (8k)");
-			audio_enabled = true;
-			audio_mux_to_tone = false;
-			ext_sr_16k = false;
+			if (!((audio_enabled == true) && (audio_mux_to_tone == false) && (ext_sr_16k == false))) {
+				ESP_LOGI(TAG, "Enable Voice stream (8k)");
+				if (audio_enabled) {
+					audio_restart = true;
+				}
+				audio_enabled = true;
+				audio_mux_to_tone = false;
+				ext_sr_16k = false;
+				
+				// Reset the echo canceller
+				_audioInitTxAlign();
+	    		echo_can_flush(echo_can_state);
+	    	}
 		}
 		
 		if (Notification(notification_value, AUDIO_NOTIFY_EN_VOICE_16_MASK)) {
-			ESP_LOGI(TAG, "Enable Voice stream (16k)");
-			audio_enabled = true;
-			audio_mux_to_tone = false;
-			ext_sr_16k = true;
-			
-			// Reset the 2X upsample filter
-			for (int i=0; i<6; i++) us_taps[i] = 0;
+			if (!((audio_enabled == true) && (audio_mux_to_tone == false) && (ext_sr_16k == true))) {
+				ESP_LOGI(TAG, "Enable Voice stream (16k)");
+				if (audio_enabled) {
+					audio_restart = true;
+				}
+				audio_enabled = true;
+				audio_mux_to_tone = false;
+				ext_sr_16k = true;;
+				
+				// Reset the echo canceller
+				_audioInitTxAlign();
+	    		echo_can_flush(echo_can_state);
+				
+				// Reset the 2X upsample filter
+				for (int i=0; i<6; i++) us_taps[i] = 0;
+			}
 		}
 		
 		if (Notification(notification_value, AUDIO_NOTIFY_MUTE_MIC_MASK)) {
@@ -475,7 +570,15 @@ static void _audioPutTx(int16_t* buf, int len)
 	}
 	
 	tx_buf_count += len;
-	if (tx_buf_count > BUF_SAMPLES) tx_buf_count = tx_buf_count % BUF_SAMPLES;
+	if (tx_buf_count > BUF_SAMPLES) {
+		tx_buf_count = tx_buf_count % BUF_SAMPLES;
+#ifdef AUDIO_PRINT_BUF_INFO
+		ESP_LOGE(TAG, "TX FIFO overflow");
+#endif
+	}
+#ifdef AUDIO_PRINT_BUF_INFO
+	if (tx_buf_count > tx_buf_max_count) tx_buf_max_count = tx_buf_count;
+#endif
 	xSemaphoreGive(tx_buf_mutex);
 }
 
@@ -552,6 +655,7 @@ static void _audioGetTx(int len, int16_t* i2s_txP)
 
 static void _audioPutRx(int len, int16_t* i2s_rxP)
 {
+    bool mute = !audio_mux_to_tone && audio_mute_mic;
 	int i;
 	int actual_len;
 	int16_t x;             // Original [previous] sample from filter tap
@@ -564,17 +668,31 @@ static void _audioPutRx(int len, int16_t* i2s_rxP)
 		//   - Low pass filter the 0's using surrounding samples using a half-band filter algorithm
 		//     (this function is always 3 samples behind called value - x contains the historical sample)
 		actual_len = 2 * len;
-		for (i=0; i<actual_len; i += 2) {
-			f = _audioUsFilter((int16_t) *i2s_rxP, &x);
-			i2s_rxP += 2;                   // Skip other channel
-			resample_buf[i] = x;
-			resample_buf[i+1] = f;
+		if (mute) {
+			for (i=0; i<actual_len; i += 2) {
+				resample_buf[i] = 0;
+				resample_buf[i+1] = 0;
+			}
+		} else {
+			for (i=0; i<actual_len; i += 2) {
+				f = _audioUsFilter(*i2s_rxP, &x);
+				i2s_rxP += 2;                   // Skip other channel
+				resample_buf[i] = x;
+				resample_buf[i+1] = f;
+			}
 		}
+		
 	} else {
 		actual_len = len;
-		for (i=0; i<actual_len; i++) {
-			resample_buf[i] = *i2s_rxP;
-			i2s_rxP += 2;                   // Skip other channel
+		if (mute) {
+			for (i=0; i<actual_len; i++) {
+				resample_buf[i] = 0;
+			}
+		} else {
+			for (i=0; i<actual_len; i++) {
+				resample_buf[i] = *i2s_rxP;
+				i2s_rxP += 2;                   // Skip other channel
+			}
 		}
 	}
 	
@@ -586,17 +704,38 @@ static void _audioPutRx(int len, int16_t* i2s_rxP)
 	}
 	
 	rx_buf_count += actual_len;
-	if (rx_buf_count > BUF_SAMPLES) rx_buf_count = rx_buf_count % BUF_SAMPLES;
+	if (rx_buf_count > BUF_SAMPLES) {
+		rx_buf_count = rx_buf_count % BUF_SAMPLES;
+#ifdef AUDIO_PRINT_BUF_INFO
+		ESP_LOGE(TAG, "RX FIFO overflow");
+#endif
+	}
+#ifdef AUDIO_PRINT_BUF_INFO
+	if (rx_buf_count > rx_buf_max_count) rx_buf_max_count = rx_buf_count;
+#endif
 	xSemaphoreGive(rx_buf_mutex);
 }
 
 
 static void _audioPushTxAlign(int len, int16_t* txP)
 {
+	// Only load TX Alignment buffer for voice
+	if (audio_mux_to_tone) return;
+	
+	// Update count
+	i2s_tx_buf_count += len;
+	if (i2s_tx_buf_count > TX_ALIGN_SAMPLES) {
+		ESP_LOGE(TAG, "Tx Alignment buffer overflow");
+	}
+#ifdef AUDIO_PRINT_BUF_INFO
+	if (i2s_tx_buf_count > i2s_tx_buf_max_count) i2s_tx_buf_max_count = i2s_tx_buf_count;
+#endif
+	
+	// Push data
 	while (len--) {
 		i2s_tx_align_buf[i2s_tx_buf_push++] = *txP;
 		txP += 2;
-		if (i2s_tx_buf_push == TX_ALIGN_BUF_SIZE) i2s_tx_buf_push = 0;
+		if (i2s_tx_buf_push == TX_ALIGN_SAMPLES) i2s_tx_buf_push = 0;
 	}
 }
 
@@ -606,7 +745,8 @@ static int16_t _audioGetTxAlign()
 	int16_t t;
 	
 	t = i2s_tx_align_buf[i2s_tx_buf_pop++];
-	if (i2s_tx_buf_pop == TX_ALIGN_BUF_SIZE) i2s_tx_buf_pop = 0;
+	if (i2s_tx_buf_pop == TX_ALIGN_SAMPLES) i2s_tx_buf_pop = 0;
+	i2s_tx_buf_count -= 1;
 	
 	return t;
 }
@@ -650,3 +790,13 @@ static __inline__ int16_t _audioUsFilter(int16_t i3, int16_t* i)
 	
 	return ((t + 32768) / 65536);
 }
+
+
+#ifdef AUDIO_PRINT_BUF_INFO
+static void _audioPrintBufInfo()
+{
+	ESP_LOGI(TAG, "Maximum RX FIFO count = %d", rx_buf_max_count);
+	ESP_LOGI(TAG, "Maximum TX FIFO count = %d", tx_buf_max_count);
+	ESP_LOGI(TAG, "Maximum Alignment buffer count = %d", i2s_tx_buf_max_count);
+}
+#endif

@@ -66,7 +66,7 @@ Connect gCore to your computer and switch on.  Open the gCore Serial Programmer 
 You can download the Espressif Programming Tool [here](https://www.espressif.com/en/support/download/other-tools).  Assuming you have downloaded the binary files in the ```precompiled``` directory to your PC, you can use this software as follows.
 
 
-1. Connect gCore to your PC and turn it on.  After a few seconds Windows should recognize it as a serial device and assign a COM port to it.
+1. Connect gCore to your PC and turn it on.  After a few seconds Windows should recognize it as a serial device and assign a COM port to it (it is possible you will have to download and install the Silicon Labs [VCP driver](https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers)).
 2. Start the Espressif Programming Tool.
 3. Configure the software with the three binary files and programming locations as shown below.
 4. Select the COM port assigned to gCore.
@@ -203,11 +203,30 @@ The following country list has mostly been selected because I found some of the 
 | Germany pre-1979 | Fun Morse Code 'A' dial tone.  No Caller ID |
 | India | Fun modulated dial tone.  Line Reversal + DTMF Caller ID |
 | New Zealand Rev | Supports reversed Rotary Dial telephones.  Bellcore Caller ID |
-| United States | My home country |
+| United States | My home country :-) |
 | United Kingdom | Fun modulated off-hook howler sound.  Line Reversal + DT-AS + SIN227 Caller ID |
 
 
 ## Release Notes
+
+### Release 1.1 - Oct 7, 2023
+Bug Fixes
+
+1. Restructure audio_task and improve interface to I2S driver to ensure consistent synchronization between RX and TX paths so we can count on a static alignment of TX/RX data into OSLEC.  Increase OSLEC tail to 32 mSec.
+2. Fixed a bug where the Caller ID transmission wasn't cancelled if the user picked  early and it ran after call hung up.
+3. Fixed a bug where a race condition between picking up the phone after the first ring could re-trigger Caller ID transmission.  Increased flush buffer to 50 mSec.
+4. Fixed a bug in the Caller ID logic where the final long ring of a cadence pair could re-trigger Caller ID transmission.
+
+Functionality
+
+1. Slight mods to code so building with optimization turned on won't cause compiler warnings/errors.
+2. Detect more cases where the cellphone might route audio to weeBell outside of a phone call and have weeBell display the right state if the user picks up the phone.
+3. Modify ring waveform to return to normal levels between rings to match expected behavior.
+4. Set full volume output for Caller ID transmissions and Off-hook tones independent of volume setting.
+5. Set Caller ID Mark pre-amble bits correctly for Bellcore and European FSK (spandsp defaults were shorter).
+6. Modify bt_task so the local volume takes precedence over the volume sent by the phone when a call is established for outgoing calls.
+7. Modify screen dump to be triggered by power button (when compiled in).
+
 
 ### Release 1.0 - Sept 15, 2023
 Bug Fixes

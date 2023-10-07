@@ -169,7 +169,7 @@ void ps_get_bt_pair_addr(uint8_t* addr)
 
 void ps_get_bt_pair_name(char* name)
 {
-	strncpy(name, ps_data.peer_name, ESP_BT_GAP_MAX_BDNAME_LEN);
+	strncpy(name, ps_data.peer_name, ESP_BT_GAP_MAX_BDNAME_LEN+1);
 	*(name + ESP_BT_GAP_MAX_BDNAME_LEN) = 0;
 }
 

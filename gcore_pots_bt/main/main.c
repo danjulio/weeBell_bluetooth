@@ -89,11 +89,11 @@ void app_main(void)
     //   Core 1 : APP
     //
     xTaskCreatePinnedToCore(&app_task,  "app_task",  3072, NULL, 2,  &task_handle_app,  0);
-    xTaskCreatePinnedToCore(&audio_task, "audio_task", 3072, NULL, tskIDLE_PRIORITY+2, &task_handle_audio, 1);
-    xTaskCreatePinnedToCore(&bt_task, "bt_task", 3072, NULL, tskIDLE_PRIORITY+2, &task_handle_bt, 0);
+    xTaskCreatePinnedToCore(&audio_task, "audio_task", 3072, NULL, 3, &task_handle_audio, 1);
+    xTaskCreatePinnedToCore(&bt_task, "bt_task", 3072, NULL, 2, &task_handle_bt, 0);
 	xTaskCreatePinnedToCore(&gcore_task,  "gcore_task",  3072, NULL, 2,  &task_handle_gcore,  0);
 	xTaskCreatePinnedToCore(&gui_task,  "gui_task",  3072, NULL, 2,  &task_handle_gui,  0);
-	xTaskCreatePinnedToCore(&pots_task, "pots_task", 3072, NULL, tskIDLE_PRIORITY+2, &task_handle_pots, 0);
+	xTaskCreatePinnedToCore(&pots_task, "pots_task", 3072, NULL, 3, &task_handle_pots, 0);
 	
 #ifdef DISPLAY_INIT_HEAP
 	// Let the tasks get started and display the memory state after boot

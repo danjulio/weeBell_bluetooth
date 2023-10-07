@@ -60,9 +60,12 @@
 #define POTS_ROT_BREAK_MSEC      100
 #define POTS_ROT_MAKE_MSEC       100
 
-// Post send DTMF tone or CID message wait period to allow audio buffers to drain of echoed back audio
+// Post send DTMF tone wait period to allow audio buffers to drain of echoed back audio
 // (to prevent it from confusing the echo canceller if it gets switched in)
-#define POTS_AUDIO_FLUSH_MSEC     30
+#define POTS_TONE_FLUSH_MSEC     30
+
+// Post CID message wait period to allow audio buffers to drain of CID before switching to call
+#define POTS_CID_FLUSH_MSEC      50
 
 // Maximum number of tone steps
 #define POTS_MAX_TONE_STEPS      (INT_MAX_TONE_PAIRS * 2)
@@ -597,14 +600,14 @@ static void _potsEvalRinger()
 	static pots_dial_stateT prev_pots_ring_state = RING_IDLE;
 #endif
 
-	if (pots_state == OFF_HOOK) {
-		// Always reset ring count when we go off hook
-		pots_ring_num = 0;
-		
+	if (pots_state == OFF_HOOK) {		
 		// End ringing if necessary
 		if (pots_ring_state != RING_IDLE) {
 			_potsEndRing();
 		}
+		
+		// Always reset ring count when we go off hook and after ending ringing
+		pots_ring_num = 0;
 	}
 	
 	switch (pots_ring_state) {
@@ -648,6 +651,9 @@ static void _potsEvalRinger()
 					} else {
 						pots_ring_state = RING_STEP_WAIT;
 						pots_ring_period_count = country_code_infoP->ring_info.cadence_pairs[pots_ring_step] / POTS_EVAL_MSEC;
+						
+						// Switch off ring mode when not actually ringing
+						_potsLineRingMode(false);
 					}
 				} else {
 					// Setup next ring pulse in this ring
@@ -669,6 +675,9 @@ static void _potsEvalRinger()
 					pots_ring_state = RING_PULSE_ON;
 					pots_ring_period_count = country_code_infoP->ring_info.cadence_pairs[pots_ring_step] / POTS_EVAL_MSEC;
 					pots_ring_pulse_count = _potsGetRingPulseCount(true);
+					
+					// Switch ring mode back on
+					_potsLineRingMode(true);
 				}
 			}
 			break;
@@ -696,6 +705,7 @@ static void _potsStartRing(bool is_rp_as)
 	pots_ring_pulse_count = _potsGetRingPulseCount(true);
 	pots_ring_step = 0;
 	pots_ring_state = RING_PULSE_ON;
+	pots_ring_num += 1;
 	_potsLineRingMode(true);   // Cause the line to enter ring mode
 	_potsLineReverse(true);    // Toggle the line (reverse) to start this pulse of the ring
 }
@@ -704,7 +714,6 @@ static void _potsStartRing(bool is_rp_as)
 static void _potsEndRing()
 {
 	pots_ring_state = RING_IDLE;
-	pots_ring_num += 1;
 	_potsLineReverse(false);   // Make sure tip/ring are not reversed
 	_potsLineRingMode(false);  // Exit ring mode
 	
@@ -715,7 +724,7 @@ static void _potsEndRing()
 	    
 		pots_trigger_cid = true;
 #ifdef POTS_CID_DEBUG
-	ESP_LOGI(TAG, "Post-ring CID trigger");
+		ESP_LOGI(TAG, "Post-ring CID trigger");
 #endif
 	}
 }
@@ -748,11 +757,17 @@ static void _potsEvalCID()
 #ifdef POTS_CID_DEBUG
 	static pots_cid_stateT prev_pots_cid_state = CID_IDLE;
 #endif
-
-	if ((pots_cid_state != CID_IDLE) && (pots_state != ON_HOOK)) {
-		// Stop caller ID if the phone goes off hook
-		pots_cid_state = CID_IDLE;		
-		_potsLineReverse(false);
+	// Stop caller ID if the phone goes off hook
+	if (pots_state != ON_HOOK) {
+		// Clean any pending caller ID
+		pots_trigger_cid = false;
+		
+		// End CID if in progress
+		if (pots_cid_state != CID_IDLE) {
+			// Reset our state
+			pots_cid_state = CID_IDLE;		
+			_potsLineReverse(false);
+		}
 	}
 
 	switch (pots_cid_state) {
@@ -761,7 +776,7 @@ static void _potsEvalCID()
 				pots_trigger_cid = false;
 				
 				// Setup the spandsp library caller ID audio generator 
-				if (_potsSetupCID()) {				
+				if (_potsSetupCID()) {					
 					// Determine how to start caller ID based on country information
 					if ((country_code_infoP->cid.cid_spec & INT_CID_FLAG_BEFORE_RING)) {
 						// Before first ring
@@ -865,11 +880,16 @@ static bool _potsSetupCID()
 	}
 	
 	// Change the caller ID message pre-amble if necessary
-	if ((country_code_infoP->cid.cid_spec & INT_CID_FLAG_EN_SHORT_PRE)) {
-		adsi_tx_set_preamble(cid_tx_stateP, 100, 60, -1, -1);
+	
+	if ((country_code_infoP->cid.cid_spec & INT_CID_TYPE_MASK) == INT_CID_TYPE_BELLCORE_FSK) {
+		// BellCore spec wants 156 or 180 Mark bits (depending on what document you read)
+		// after preamble but adsi.c does 80 by default so we reset that here
+		adsi_tx_set_preamble(cid_tx_stateP, -1, 156, -1, -1);
+	} else if ((country_code_infoP->cid.cid_spec & INT_CID_FLAG_EN_SHORT_PRE) == 0) {
+		// ETSI EN 300 659-1 specifies normal pre-amble to be 180 Mark bits so once again
+		// we override the adsi.c default 80 (short pre-amble)
+		adsi_tx_set_preamble(cid_tx_stateP, -1, 180, -1, -1);
 	}
-	// TODO??? - BellCore spec wants ~130 Mark bits after preamble but ADSI does 80 by default
-	// so maybe have to have special case to set preamble for BellCore
 	
 	// Get message strings
 	cid_buf_len = app_get_cid_number(cid_buf);
@@ -1089,8 +1109,8 @@ static bool _potsEvalDialer(bool hookChange)
 
 static void _potsSetToneState(pots_tone_stateT ns)
 {
-	pots_tone_state = ns;
 	_potsSetAudioOutput(ns);
+	pots_tone_state = ns;
 }
 
 
@@ -1237,7 +1257,7 @@ static void _potsEvalToneState(bool potsDigitDialed, bool appDigitDialed)
 			}
 			break;
 		
-		case TONE_CID_FLUSH:
+		case TONE_CID_FLUSH: // Let the RX audio buffer flush of the CID message we just sent
 			if (_potsToneTimerExpired()) {
 				_potsSetToneState(TONE_IDLE);
 			}
@@ -1329,6 +1349,11 @@ static void _potsSetAudioOutput(pots_tone_stateT s)
 		case TONE_IDLE:
 			// Notify audio_task to disable audio
 			xTaskNotify(task_handle_audio, AUDIO_NOTIFY_DISABLE_MASK, eSetBits);
+			
+			// Notify app_task to restore audio levels if necessary
+			if (pots_tone_state == TONE_OFF_HOOK) {
+				xTaskNotify(task_handle_app, APP_NOTIFY_POTS_NORM_SPK_GAIN_MASK, eSetBits);
+			}
 			break;
 		
 		case TONE_VOICE:
@@ -1384,7 +1409,7 @@ static void _potsSetAudioOutput(pots_tone_stateT s)
 		
 		case TONE_DTMF_FLUSH:
 			// Setup timer for flush period following a DTMF tone generation
-			pots_tone_timer_count = POTS_AUDIO_FLUSH_MSEC / POTS_EVAL_MSEC;
+			pots_tone_timer_count = POTS_TONE_FLUSH_MSEC / POTS_EVAL_MSEC;
 			break;
 		
 		case TONE_NO_SERVICE:
@@ -1397,18 +1422,28 @@ static void _potsSetAudioOutput(pots_tone_stateT s)
 		case TONE_OFF_HOOK:
 			_potsSetupAudioTone(INT_TONE_SET_OH_INDEX);
 			
+			// Notify app_task to set maximum gain for signaling (in case user has set a very low speaker volume)
+			xTaskNotify(task_handle_app, APP_NOTIFY_POTS_MAX_SPK_GAIN_MASK, eSetBits);
+			
+			
 			// Notify audio_task to start processing tone
 			xTaskNotify(task_handle_audio, AUDIO_NOTIFY_EN_TONE_MASK, eSetBits);
 			break;
 		
 		case TONE_CID:
+			// Notify app_task to set maximum gain for signaling (in case user has set a very low speaker volume)
+			xTaskNotify(task_handle_app, APP_NOTIFY_POTS_MAX_SPK_GAIN_MASK, eSetBits);
+			
 			// Notify audio_task to start processing message
 			xTaskNotify(task_handle_audio, AUDIO_NOTIFY_EN_TONE_MASK, eSetBits);
 			break;
 		
 		case TONE_CID_FLUSH:
+			// Notify app_task to restore audio levels
+			xTaskNotify(task_handle_app, APP_NOTIFY_POTS_NORM_SPK_GAIN_MASK, eSetBits);
+				
 			// Setup timer for flush period following a CID audio generation
-			pots_tone_timer_count = POTS_AUDIO_FLUSH_MSEC / POTS_EVAL_MSEC;
+			pots_tone_timer_count = POTS_CID_FLUSH_MSEC / POTS_EVAL_MSEC;
 			break;
 	}
 }
