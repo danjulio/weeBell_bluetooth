@@ -105,8 +105,8 @@ weeBell Bluetooth uses the classic Bluetooth Handsfree profile to communicate wi
 | Status | Current device status such as Dialing or Call In Progress. |
 | Bluetooth | Displays a Bluetooth icon when connected to a cellphone. |
 | Number | Displays phone numbers being dialed or answered. |
-| Mute | Mute button.  Mutes audio from the telephone handset microphone when active. |
-| DND | Do Not Disturb button.  Prevents the phone ringer from ringing when active. |
+| Mute | Mute button.  Mutes audio from the telephone handset microphone when active (red). |
+| DND | Do Not Disturb button.  Prevents the phone ringer from ringing when active (red). |
 | Keypad | Used to dial when the phone is off hook.  May also be used to send DTMF tones during a call when using a rotary phone. |
 | Settings | Display the Settings screen. |
 | Dial | Initiates a call or terminates an ongoing call. weeBell will also initiate a call 3 seconds the last digit is dialed from the telephone. |
@@ -140,7 +140,7 @@ The current digit to be changed is indicated in yellow.  After a digit is entere
 | --- | --- |
 | Back | Return to the Settings screen. |
 | Time | The time to set in 24-hour HH:MM:SS format. |
-| Date | The date to set in MM:DD:YY format. |
+| Date | The date to set in MM/DD/YY format. |
 | Keypad | Numeric and cursor keys. |
 | Set Time/Date | Sets the displayed time and date and returns to the Settings screen. |
 
@@ -178,7 +178,7 @@ weeBell generates Caller ID (CLIP) information and supports the following standa
 2. ETSI EN 300-659-1 - V23 FSK or DTMF modulation, before or after the first ring, with optional line reversal, DT-AS or RP-AS alerting.
 3. SIN227 - V23 FSK modulation with line reversal and DT-AS alerting before the first ring.
 
-It generates Single Data Message Format (SDMF) data packets.
+It generates Single Data Message Format (SDMF), Multiple Data Message Format (MDMF) and multiple DTMF-encoded data packets.
 
 #### Auto power on
 weeBell is designed to be left running constantly using an external USB-C power supply.  It will run from battery power when power fails.  It will automatically turn off when the battery voltage goes below 3.5V to protect the LiPo battery from over-discharge.  In this case it will power-on automatically when external USB power is re-applied.  A typical 2000 mAh battery will provide many hours of runtime.
@@ -203,7 +203,7 @@ The following country list has mostly been selected because I found some of the 
 | Germany pre-1979 | Fun Morse Code 'A' dial tone.  No Caller ID |
 | India | Fun modulated dial tone.  Line Reversal + DTMF Caller ID |
 | New Zealand Rev | Supports reversed Rotary Dial telephones.  Bellcore Caller ID |
-| United States | My home country :-) |
+| United States | My home country :-) We have a good Howler too. |
 | United Kingdom | Fun modulated off-hook howler sound.  Line Reversal + DT-AS + SIN227 Caller ID |
 
 
